@@ -1,164 +1,108 @@
 <p align="center">
-  <a href="https://github.com/Geocld/XStreaming">
-    <img src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/logo.png" width="258">
-  </a>
+  <img src="docs/logo.png" width="200" alt="Anomaly Xbox">
+</p>
+
+<h1 align="center">Anomaly Xbox</h1>
+
+<p align="center">
+  Free, open-source Xbox Remote Play and xCloud streaming client for Android.
 </p>
 
 <p align="center">
-  Open source Xbox streaming client that allows you to stream Xbox and play xCloud anytime, supporting Android/iOS.
+  <a href="https://github.com/shahittoshariear-spec/anomaly-xbox/releases/latest">
+    <img src="https://img.shields.io/github/v/release/shahittoshariear-spec/anomaly-xbox?label=download&style=for-the-badge" alt="Latest release">
+  </a>
 </p>
 
-**English** | [中文](./README.zh_CN.md)
+---
 
-## Intro
-
-XStreaming is an open-source mobile client for xCloud and Xbox home streaming, great inspired by [Greenlight](https://github.com/unknownskl/greenlight).
-
-> DISCLAIMER: XStreaming is not affiliated with Microsoft, Xbox. All rights and trademarks are property of their respective owners.
-
-## iOS
-
-`XStreaming` is now available on the Apple Store! Due to listing restrictions, it is named `PeaSyo` in the store. If you like this app, you can support us by purchasing it for the price of a cup of coffee.
-
-<a href="https://apps.apple.com/us/app/peasyo/id6743263824">
-    <img alt="Download on the App Store" src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/apple-store-badge.svg" style="height: 64px">
-</a>
-
-> XStreaming's code is fully open-source. You can build your own iOS version directly from the source code—simply fetch the code from the `ios` branch and compile it.
-
-## HarmonyOS
-`XStreaming` is now available on the HUAWEI App Gallery!
-
-<a href="https://appgallery.huawei.com/app/detail?id=com.lijiahao.xstreamingoh" target="_blank">
-    <img alt="Explore on App Gallery" src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/Huawei_AppGallery.png" style="height: 64px">
-</a>
-
-
-## Windows/MacOS/Linux(steamOS)
-
-If you are looking for Windows/MacOS/Linux(steamOS) Xbox streaming application, you can use [XStreaming-desktop](https://github.com/Geocld/XStreaming-desktop) or [Greenlight](https://github.com/unknownskl/greenlight).
-
-## Atmosphere on Nintendo Switch
-The outstanding open-source project [LunarNX](https://github.com/thinkzhou/LunarNX) is highly recommended. It operates natively within the Atmosphere environment, offering support for both console streaming and xCloud, with a maximum output of 1080p HQ. The developer is currently in active iteration; contributions and interest are warmly welcomed.
+Anomaly Xbox is a personal fork of [XStreaming](https://github.com/Geocld/XStreaming)
+v2.12.0, rebuilt as a standalone app for playing an Xbox console on a phone with any
+standard Android gamepad.
 
 ## Features
 
-- Stream video and audio from the Xbox One and Xbox Series S/X
-- Support for 1080P/1080P(HQ) resolution
-- AMD FidelityFX super resolution v1 [FSR 1]
-- LSFG-based frame generation, enabling a 30fps -> 60fps and 60fps -> 120fps experience on Snapdragon devices.
-- Support for virtual\OTG\bluetooth gamepad controls
-- Support controller rumble
-- Support Android TV
-- Support rumble on xCloud without any proxy in some regions
-- Dual render engines
-- Archivements system
-- IPv6
+- **Xbox Remote Play** — stream your own Xbox One or Xbox Series S|X over the local network
+- **Xbox Cloud Gaming** — play Game Pass titles (Game Pass Ultimate required)
+- Up to 1080p with hardware video decoding and rumble
+- Works with standard Android HID gamepads, including the GameSir X5 Lite and Nova Lite
+- Anomaly launcher icon, monochrome icon and dark splash screen
+- Update checker disabled by default and pointed at this repository
 
-<img src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/game.png" width="400" />
-<img src="https://github.com/Geocld/XStreaming/blob/main/images/home.png" width="400" /> <img src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/xcloud.png" width="400" /><img src="https://raw.githubusercontent.com/Geocld/XStreaming/main/images/settings1.png" width="400" />
+## Download
 
-## About Frame Generation
-`XStreaming` frame generation is based on [LSFG-Android](https://github.com/FrankBarretta/LSFG-Android). You need to import a genuine `Lossless.dll` to use the full frame generation functionality. This project will not provide the `Lossless.dll` file. Please support genuine LSFG and obtain a genuine `Lossless.dll`.
+Grab the latest signed APK from the
+[**Releases**](https://github.com/shahittoshariear-spec/anomaly-xbox/releases/latest) page.
 
-## Compatibility
+| | |
+|---|---|
+| Package | `app.anomaly.xbox` |
+| Version | 2.12.0 |
+| Minimum Android | 8.0 (API 26) |
+| ABIs | arm64-v8a, armeabi-v7a |
+| License | AGPL-3.0 |
 
-XStreaming v2 introduces a dual-rendering engine mechanism, ensuring compatibility with devices running WebView versions below 91. If the streaming interface displays a blank screen or becomes unresponsive, navigate to `Settings > Rendering Engine > Select Native` to switch to the Android native rendering engine for video playback.
+## Setup
 
-## Local Development
+1. On the Xbox, open **Settings → Devices & connections → Remote features** and enable
+   **Enable remote features**. Leave the console in standby with sleep mode enabled.
+2. Install the APK and open the app.
+3. Sign in with the Microsoft account that owns the console. Credentials go to Microsoft,
+   not to this app.
+4. Connect the phone and the console to the same network, then pick the console on the
+   home screen.
+5. For cloud gaming, sign in with an account that has Game Pass Ultimate and choose a title
+   from the Cloud tab.
 
-### Requirements
-- [React Native](https://reactnative.dev/) = 0.72.14
-- [NodeJs](https://nodejs.org/) >= 20
-- [Yarn](https://yarnpkg.com/) >= 1.22
+## Controllers
 
-### Steps to get up and running
+Any standard Android gamepad works over Bluetooth or USB. Pair it with the phone before
+launching a stream; Android maps it as a HID gamepad and the app picks it up automatically.
+The GameSir Nova Lite has been verified with this build.
 
-Clone the repository:
+## Build from source
 
-```
-git clone https://github.com/Geocld/XStreaming
-cd XStreaming
-```
+Requirements: Node.js 20, JDK 17, Android SDK (platform 34, build-tools 35), Yarn.
 
-Install dependencies:
-
-```
-yarn
-```
-
-Run development build:
-
-```
-npm run android
+```sh
+yarn install
+cd android
+./gradlew :app:assembleProdRelease
 ```
 
-## Development document
+The output APK is `android/app/build/outputs/apk/prod/release/app-prod-release.apk`. Before
+installing, align it to 16 KB and sign it:
 
-1. [Auth](/docs/1.Auth.md)
-2. [Web API](./docs/2.Web.md)
-3. [Stream](./docs/3.Stream.md)
+```sh
+zipalign -P 16 -f 4 app-prod-release.apk app-prod-release-aligned.apk
+apksigner sign --ks release.keystore --out app-prod-release-signed.apk app-prod-release-aligned.apk
+```
 
-## Developers
+The native libraries `libnano_rs.so`, `liblsfg-android.so` and `libSDL2.so` are checked in
+under `android/app/src/main/jniLibs/`, so the Rust and CMake toolchains are not required to
+build the app.
 
-XStreaming's development can not be without these Hackers. They contributed a lot of capabilities for XStreaming. Also, welcome to follow them! ❤️
+## Changes from upstream
 
-<!-- readme: contributors -start -->
-<table>
-<tr>
-    <td align="center">
-        <a href="https://github.com/Geocld">
-            <img src="https://avatars.githubusercontent.com/u/13679095?v=4" width="90;" alt="Geocld"/>
-            <br />
-            <sub><b>Geocld</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/wtlucky">
-            <img src="https://avatars.githubusercontent.com/u/2265430?v=4" width="90;" alt="wtlucky"/>
-            <br />
-            <sub><b>wtlucky</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/TigerBeanst">
-            <img src="https://avatars.githubusercontent.com/u/3889846?v=4" width="90;" alt="TigerBeanst"/>
-            <br />
-            <sub><b>TigerBeanst</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/Sirherobrine23">
-            <img src="https://avatars.githubusercontent.com/u/50121801?v=4" width="90;" alt="Sirherobrine23"/>
-            <br />
-            <sub><b>Sirherobrine23</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/rabin-HE">
-            <img src="https://avatars.githubusercontent.com/u/96038890?v=4" width="90;" alt="rabin-HE"/>
-            <br />
-            <sub><b>rabin-HE</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/fortifying">
-            <img src="https://avatars.githubusercontent.com/u/60229681?v=4" width="90;" alt="Heinz Der Flugel"/>
-            <br />
-            <sub><b>Heinz Der Flugel</b></sub>
-        </a>
-    </td>
-    <td align="center">
-        <a href="https://github.com/gustvtech">
-            <img src="https://avatars.githubusercontent.com/u/111547125?v=4" width="90;" alt="Gustavo Rocha"/>
-            <br />
-            <sub><b>Gustavo Rocha</b></sub>
-        </a>
-    </td>
-  </tr>
-</table>
-<!-- readme: contributors -end -->
+See [MODIFICATIONS-XBOX.md](MODIFICATIONS-XBOX.md). In short: new app id and label, Anomaly
+icons and splash screen, About-screen branding, update checker disabled by default,
+prebuilt native libraries instead of a Rust/CMake build, and a fixed malformed upstream
+patch file.
 
-### License
+## Limitations
 
-XStreaming strictly complies with the [AGPL v3 license](./LICENSE). If other projects refer to or borrow from this project's implementation, please strictly comply with this license.
+- Built and statically validated, but not yet tested against real Xbox hardware.
+- Xbox remote play requires the console to be configured for remote features and signed in
+  with the same Microsoft account.
+- Microsoft can change its streaming endpoints at any time; upstream XStreaming releases
+  are the source of compatibility fixes.
+- Personal use only. Not affiliated with or endorsed by Microsoft.
+
+## License
+
+This project is licensed under the **AGPL-3.0**, the same license as the upstream
+XStreaming project. It contains work by the XStreaming authors and is distributed with the
+same attribution. See [LICENSE](LICENSE).
+
+Xbox, Xbox Series X|S and Xbox Cloud Gaming are trademarks of Microsoft Corporation.
+XStreaming is a trademark of its respective owners.
