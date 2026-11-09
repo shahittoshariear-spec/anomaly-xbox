@@ -1,0 +1,304 @@
+import { storage } from './mmkv';
+import { debugFactory } from '../utils/debug';
+import { NativeModules, DeviceEventEmitter, Platform } from 'react-native';
+import {
+  DEFAULT_VIRTUAL_MACRO_LONG_PRESS_MS,
+  DEFAULT_VIRTUAL_MACRO_LONG_STEPS,
+  DEFAULT_VIRTUAL_MACRO_SHORT_STEPS,
+} from '../utils/virtualMacro';
+import { DEFAULT_THEME_PRIMARY_COLOR } from '../utils/themeColor';
+import { getSystemLocale } from '../utils/locale';
+const log = debugFactory('settingStore');
+
+export const SETTINGS_CHANGED_EVENT = 'SETTINGS_CHANGED';
+
+const STORE_KEY = 'user.settings';
+
+const isAndroid12OrHigher =
+  Platform.OS === 'android' && Number(Platform.Version) >= 31;
+const defaultPictureInPicture = isAndroid12OrHigher && !Platform.isTV;
+
+type DisplayOptions = {
+  sharpness: number;
+  saturation: number;
+  contrast: number;
+  brightness: number;
+};
+
+export type Settings = {
+  locale: string;
+  locale_follow_system: boolean;
+  resolution: number;
+  render_engine: 'web' | 'native' | 'nano';
+  xhome_bitrate_mode: string;
+  xhome_bitrate: number | string;
+  xcloud_bitrate_mode: string;
+  xcloud_bitrate: number | string;
+  audio_bitrate_mode: string;
+  audio_bitrate: number | string;
+  enable_stereo_audio: boolean;
+  enable_audio_control: boolean;
+  enable_audio_rumble: boolean;
+  audio_rumble_threshold: number;
+  preferred_game_language: string;
+  force_region_ip: string;
+  signaling_home_name: string;
+  signaling_cloud_name: string;
+  codec: string;
+  show_performance: boolean;
+  performance_style: boolean;
+  performance_opacity: number;
+  vibration: boolean;
+  vibration_mode: string;
+  native_touch: boolean;
+  bind_usb_device: boolean;
+  show_harmony_modal: boolean;
+  rumble_intensity: number;
+  gamepad_kernal: string;
+  dead_zone: number;
+  edge_compensation: number;
+  short_trigger: boolean;
+  auto_sprint: boolean;
+  video_format: string;
+  picture_in_picture: boolean;
+  native_portrait_mode: boolean;
+  native_portrait_gamepad_layout: any[];
+  native_low_latency_decoder: boolean;
+  show_virtual_gamead: boolean;
+  virtual_gamepad_opacity: number;
+  virtual_gamepad_joystick: number;
+  custom_virtual_gamepad: string;
+  virtual_macro_enabled: boolean;
+  virtual_macro_loop_enabled: boolean;
+  virtual_macro_loop_interval_ms: number;
+  virtual_macro_long_press_ms: number;
+  virtual_macro_short_press_steps: any[];
+  virtual_macro_long_press_steps: any[];
+  gamepad_maping: Record<string, number> | null;
+  native_gamepad_maping: Record<string, number> | null;
+  polling_rate: number;
+  sensor: number;
+  sensor_type: number;
+  sensor_sensitivity_x: number;
+  sensor_sensitivity_y: number;
+  sensor_invert: number;
+  left_trigger_type: number;
+  left_trigger_effects: [];
+  right_trigger_type: number;
+  right_trigger_effects: [];
+  display_options: DisplayOptions;
+  fsr_display_options: DisplayOptions;
+  hold_buttons: [];
+  ipv6: boolean;
+  check_update: boolean;
+  power_on: boolean;
+  use_inner_turn_server: boolean;
+  server_url: string;
+  server_username: string;
+  server_credential: string;
+  theme: string;
+  theme_primary_color: string;
+  show_menu: boolean;
+  fsr: boolean;
+  smart_frame_generation: boolean;
+  coop: boolean;
+  use_msal_login: boolean;
+  enable_microphone: boolean;
+  debug: boolean;
+  show_session_report: boolean;
+  preview_features: boolean;
+};
+
+const defaultSettings: Settings = {
+  locale: 'en',
+  locale_follow_system: true,
+  resolution: 720,
+  render_engine: 'native',
+  xhome_bitrate_mode: 'auto',
+  xhome_bitrate: 20,
+  xcloud_bitrate_mode: 'auto',
+  xcloud_bitrate: 20,
+  audio_bitrate_mode: 'auto',
+  audio_bitrate: 20,
+  enable_stereo_audio: true,
+  enable_audio_control: false,
+  enable_audio_rumble: false,
+  audio_rumble_threshold: 20,
+  preferred_game_language: 'en-US',
+  force_region_ip: '',
+  signaling_home_name: '',
+  signaling_cloud_name: '',
+  codec: '',
+  show_performance: false,
+  performance_style: true,
+  performance_opacity: 0.7,
+  vibration: true,
+  vibration_mode: 'Native',
+  native_touch: false,
+  bind_usb_device: false,
+  show_harmony_modal: true,
+  rumble_intensity: 3,
+  gamepad_kernal: 'Native',
+  dead_zone: 0.1,
+  edge_compensation: 0,
+  short_trigger: false,
+  auto_sprint: false,
+  video_format: '',
+  picture_in_picture: defaultPictureInPicture,
+  native_portrait_mode: false,
+  native_portrait_gamepad_layout: [],
+  native_low_latency_decoder: false,
+  show_virtual_gamead: false,
+  virtual_gamepad_opacity: 0.7,
+  custom_virtual_gamepad: '',
+  virtual_gamepad_joystick: 1,
+  virtual_macro_enabled: false,
+  virtual_macro_loop_enabled: false,
+  virtual_macro_loop_interval_ms: 500,
+  virtual_macro_long_press_ms: DEFAULT_VIRTUAL_MACRO_LONG_PRESS_MS,
+  virtual_macro_short_press_steps: DEFAULT_VIRTUAL_MACRO_SHORT_STEPS,
+  virtual_macro_long_press_steps: DEFAULT_VIRTUAL_MACRO_LONG_STEPS,
+  gamepad_maping: null,
+  native_gamepad_maping: null,
+  polling_rate: 62.5,
+  sensor: 0,
+  sensor_type: 1,
+  sensor_sensitivity_x: 15000,
+  sensor_sensitivity_y: 15000,
+  sensor_invert: 0,
+  left_trigger_type: 0,
+  left_trigger_effects: [],
+  right_trigger_type: 0,
+  right_trigger_effects: [],
+  ipv6: false,
+  check_update: false,
+  power_on: false,
+  use_inner_turn_server: false,
+  server_url: '',
+  server_username: '',
+  server_credential: '',
+  display_options: {
+    sharpness: 5,
+    saturation: 100,
+    contrast: 100,
+    brightness: 100,
+  },
+  fsr_display_options: {
+    sharpness: 2,
+    saturation: 5,
+    contrast: 5,
+    brightness: 5,
+  },
+  hold_buttons: [],
+  theme: 'dark',
+  theme_primary_color: DEFAULT_THEME_PRIMARY_COLOR,
+  show_menu: false,
+  fsr: false,
+  smart_frame_generation: false,
+  coop: false,
+  use_msal_login: false,
+  enable_microphone: false,
+  debug: false,
+  show_session_report: true,
+  preview_features: false,
+};
+
+let cachedSettings: Settings | null = null;
+
+export const saveSettings = (settings: Settings) => {
+  log.info('SaveSettings:', settings);
+  const totalSettings = Object.assign({}, defaultSettings, settings);
+  const stereoAudioValue = (totalSettings as any).enable_stereo_audio;
+  totalSettings.enable_stereo_audio =
+    stereoAudioValue === true || stereoAudioValue === 'true';
+  const sessionReportValue = (totalSettings as any).show_session_report;
+  totalSettings.show_session_report =
+    sessionReportValue === true || sessionReportValue === 'true';
+  // AsyncStorage.setItem(STORE_KEY, JSON.stringify(totalSettings));
+  if (settings.picture_in_picture !== undefined) {
+    storage.set('user.settings.pip_configured', true);
+  }
+  storage.set(STORE_KEY, JSON.stringify(totalSettings));
+  cachedSettings = totalSettings;
+  try {
+    NativeModules.AudioSettingModule?.setStereoEnabled?.(
+      !!totalSettings.enable_stereo_audio,
+    );
+    NativeModules.AudioSettingModule?.setLowLatencyDecoderEnabled?.(
+      !!totalSettings.native_low_latency_decoder,
+    );
+  } catch (error) {
+    log.warn('sync native settings failed:', error);
+  }
+  try {
+    DeviceEventEmitter.emit(SETTINGS_CHANGED_EVENT, totalSettings);
+  } catch (error) {
+    log.warn('emit settings changed failed:', error);
+  }
+};
+
+export const getSettings = (): Settings => {
+  if (cachedSettings) {
+    return cachedSettings;
+  }
+  let settings = storage.getString(STORE_KEY);
+  if (!settings) {
+    cachedSettings = {
+      ...defaultSettings,
+      locale: getSystemLocale(),
+      locale_follow_system: true,
+    };
+    return cachedSettings;
+  }
+  try {
+    const _settings = JSON.parse(settings) as Partial<Settings>;
+    const hasLocaleFollowSystem = Object.prototype.hasOwnProperty.call(
+      _settings,
+      'locale_follow_system',
+    );
+    const merged = Object.assign({}, defaultSettings, _settings);
+    merged.locale_follow_system = hasLocaleFollowSystem
+      ? !!_settings.locale_follow_system
+      : false;
+    if (merged.locale_follow_system) {
+      merged.locale = getSystemLocale();
+    }
+    if (_settings.show_session_report !== undefined) {
+      merged.show_session_report =
+        String(_settings.show_session_report) === 'true';
+    }
+    if (Platform.isTV) {
+      merged.picture_in_picture = false;
+    } else if (
+      isAndroid12OrHigher &&
+      !storage.getBoolean('user.settings.pip_configured')
+    ) {
+      merged.picture_in_picture = true;
+    }
+    cachedSettings = merged;
+    return cachedSettings;
+  } catch {
+    cachedSettings = {
+      ...defaultSettings,
+      locale: getSystemLocale(),
+      locale_follow_system: true,
+    };
+    return cachedSettings;
+  }
+};
+
+export const resetSettings = () => {
+  log.info('resetSettings');
+  storage.delete('user.settings.pip_configured');
+  storage.set(STORE_KEY, JSON.stringify(defaultSettings));
+  cachedSettings = {
+    ...defaultSettings,
+    locale: getSystemLocale(),
+    locale_follow_system: true,
+  };
+  try {
+    DeviceEventEmitter.emit(SETTINGS_CHANGED_EVENT, cachedSettings);
+  } catch (error) {
+    log.warn('emit settings reset failed:', error);
+  }
+};

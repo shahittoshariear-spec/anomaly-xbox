@@ -1,0 +1,3717 @@
+import React from 'react';
+import {
+  View,
+  Text,
+  Image,
+  Alert,
+  NativeModules,
+  NativeEventEmitter,
+  StyleSheet,
+  ToastAndroid,
+  Platform,
+  Vibration,
+  AppState,
+  StatusBar,
+  useWindowDimensions,
+} from 'react-native';
+import {IconButton} from 'react-native-paper';
+import {RTCView, MediaStream, RTCRtpReceiver} from 'react-native-webrtc';
+import Orientation from 'react-native-orientation-locker';
+import Spinner from '../components/Spinner';
+import {
+  applyScreenOrientation,
+  getCurrentScreenOrientation,
+  type ScreenOrientation,
+} from '../utils/orientation';
+import {useSelector} from 'react-redux';
+import XcloudApi from '../xCloud';
+import WebApi from '../web';
+import {getSettings, saveSettings} from '../store/settingStore';
+import {saveSettings as saveGamepadLayout} from '../store/gamepadStore';
+import {useTranslation} from 'react-i18next';
+import webRTCClient from '../webrtc';
+import {debugFactory} from '../utils/debug';
+import {GAMEPAD_MAPING} from '../common';
+import {XBOX_360_GAMEPAD_MAPING} from '../common/usbGamepadMaping';
+import VirtualGamepad from '../components/VirtualGamepad';
+import CustomVirtualGamepad from '../components/CustomVirtualGamepad';
+import VirtualGamepadEditor, {
+  ButtonConfig,
+} from '../components/VirtualGamepadEditor';
+import PerfPanel from '../components/PerfPanel';
+import RecordingIndicator from '../components/RecordingIndicator';
+import gameRecorder from '../utils/gameRecorder';
+import screenshot from '../utils/screenshot';
+import RTCFsrView from '../components/RTCFsrView';
+import RTCFrameGenView from '../components/RTCFrameGenView';
+import NativeTouchOverlay from '../components/NativeTouchOverlay';
+import PortraitVirtualGamepad, {
+  PortraitGamepadControl,
+} from '../components/PortraitVirtualGamepad';
+import type {PointerWireData} from '../webrtc/Channel/Input';
+import {
+  normalizeMacroLoopIntervalMs,
+  normalizeMacroSteps,
+  VIRTUAL_MACRO_ALLOWED_BUTTONS,
+  VIRTUAL_MACRO_BUTTON_NAME,
+  DEFAULT_VIRTUAL_MACRO_SHORT_STEPS,
+} from '../utils/virtualMacro';
+import sessionStatsTracker, {
+  formatDuration,
+} from '../utils/sessionStatsTracker';
+import {
+  getCloudSessionTimeLimitSeconds,
+  getActiveStreamStartTime,
+  saveActiveStreamStartTime,
+  clearActiveStreamStartTime,
+} from '../utils/xcloud';
+import {
+  suspendGamepadNavigation,
+  resumeGamepadNavigation,
+} from '../utils/useGamepadNavigation';
+
+const log = debugFactory('NativeStreamScreen');
+
+const CONNECTED = 'connected';
+const CLOSED = 'closed';
+const FAILED = 'failed';
+const DISCONNECTED = 'disconnected';
+const DUALSENSE = 'DualSenseController';
+const LIVE_GAMEPAD_PROFILE = 'LiveLayout';
+const PICTURE_IN_PICTURE_MODE_CHANGED = 'pictureInPictureModeChanged';
+
+const {
+  FullScreenManager,
+  GamepadManager,
+  SdlGamepadManager,
+  UsbRumbleManager,
+  SensorModule,
+  GamepadSensorModule,
+  PipManager,
+  NativeInputDialog,
+  FrameGenStatsModule,
+} = NativeModules;
+
+let defaultMaping: any = GAMEPAD_MAPING;
+let triggerMax = 0.8;
+
+const GAMEPAD_DIGITAL_KEYS = [
+  'A',
+  'B',
+  'X',
+  'Y',
+  'LeftShoulder',
+  'RightShoulder',
+  'View',
+  'Menu',
+  'LeftThumb',
+  'RightThumb',
+  'DPadUp',
+  'DPadDown',
+  'DPadLeft',
+  'DPadRight',
+  'Nexus',
+];
+
+const SYSTEM_UI_TARGET_SHOW_MESSAGE_DIALOG =
+  '/streaming/systemUi/messages/ShowMessageDialog';
+const SYSTEM_UI_TARGET_SHOW_VIRTUAL_KEYBOARD =
+  '/streaming/systemUi/messages/ShowVirtualKeyboard';
+const STREAMING_TOUCHCONTROLS_SCOPE = '/streaming/touchcontrols';
+const STOP_STREAM_TIMEOUT_MS = 5000;
+const PROCESSED_FRAME_FEEDBACK_DECODE_MS = 10;
+const RECONNECT_INTERVAL_MS = 1000;
+const MAX_RECONNECT_ATTEMPTS = 20;
+
+const getFrameFeedbackNowMs = () => {
+  return globalThis.performance?.now?.() ?? Date.now();
+};
+
+const createStableResolutionProcessedFrame = () => {
+  const decodedTimeMs = getFrameFeedbackNowMs();
+  const submittedTimeMs = decodedTimeMs - PROCESSED_FRAME_FEEDBACK_DECODE_MS;
+  return {
+    serverDataKey: Date.now(),
+    firstFramePacketArrivalTimeMs: submittedTimeMs,
+    frameSubmittedTimeMs: submittedTimeMs,
+    frameDecodedTimeMs: decodedTimeMs,
+    frameRenderedTimeMs: decodedTimeMs,
+    expectedDisplayTime: decodedTimeMs + 1,
+  };
+};
+
+const stopStreamWithTimeout = (streamApi: any) => {
+  if (!streamApi || typeof streamApi.stopStream !== 'function') {
+    return Promise.resolve();
+  }
+
+  let timeoutId: any;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error('STOP_STREAM_TIMEOUT'));
+    }, STOP_STREAM_TIMEOUT_MS);
+  });
+
+  return Promise.race([
+    Promise.resolve().then(() => streamApi.stopStream()),
+    timeoutPromise,
+  ]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+};
+
+const createGamepadState = (gamepadIndex = 0) => ({
+  GamepadIndex: gamepadIndex,
+  A: 0,
+  B: 0,
+  X: 0,
+  Y: 0,
+  LeftShoulder: 0,
+  RightShoulder: 0,
+  LeftTrigger: 0,
+  RightTrigger: 0,
+  View: 0,
+  Menu: 0,
+  LeftThumb: 0,
+  RightThumb: 0,
+  DPadUp: 0,
+  DPadDown: 0,
+  DPadLeft: 0,
+  DPadRight: 0,
+  Nexus: 0,
+  LeftThumbXAxis: 0.0,
+  LeftThumbYAxis: 0.0,
+  RightThumbXAxis: 0.0,
+  RightThumbYAxis: 0.0,
+});
+
+const resetGamepadState = (
+  state: any,
+  gamepadIndex = state.GamepadIndex ?? 0,
+) => {
+  state.GamepadIndex = gamepadIndex;
+  state.A = 0;
+  state.B = 0;
+  state.X = 0;
+  state.Y = 0;
+  state.LeftShoulder = 0;
+  state.RightShoulder = 0;
+  state.LeftTrigger = 0;
+  state.RightTrigger = 0;
+  state.View = 0;
+  state.Menu = 0;
+  state.LeftThumb = 0;
+  state.RightThumb = 0;
+  state.DPadUp = 0;
+  state.DPadDown = 0;
+  state.DPadLeft = 0;
+  state.DPadRight = 0;
+  state.Nexus = 0;
+  state.LeftThumbXAxis = 0.0;
+  state.LeftThumbYAxis = 0.0;
+  state.RightThumbXAxis = 0.0;
+  state.RightThumbYAxis = 0.0;
+};
+
+const gpState = createGamepadState(0);
+
+type NativeStreamScreenProps = {
+  navigation: any;
+  route: any;
+  portraitMode?: boolean;
+};
+
+export function NativeStreamScreenBase({
+  navigation,
+  route,
+  portraitMode = false,
+}: NativeStreamScreenProps) {
+  if (route?.params?.params) {
+    route = {
+      ...route,
+      params: {
+        ...route.params.params,
+        ...route.params,
+      },
+    };
+  }
+  const {t} = useTranslation();
+  const {width: screenWidth} = useWindowDimensions();
+  const authentication = useSelector((state: any) => state.authentication);
+  const streamingTokens = useSelector((state: any) => state.streamingTokens);
+  const webToken = useSelector((state: any) => state.webToken);
+
+  const [loading, setLoading] = React.useState(false);
+  const [loadingText, setLoadingText] = React.useState('');
+  const [streamApi, setStreamApi] = React.useState<any>(null);
+  const [settings, setSettings] = React.useState<any>({});
+  const [isExiting, setIsExiting] = React.useState(false);
+  const [showModal, setShowModal] = React.useState(false);
+  const [showVirtualGamepad, setShowVirtualGamepad] = React.useState(false);
+  const [connectState, setConnectState] = React.useState('');
+  const [performance, setPerformance] = React.useState<any>({});
+  const [showPerformance, setShowPerformance] = React.useState(false);
+  const [messageSending, setMessageSending] = React.useState(false);
+  const [showGamepadEditor, setShowGamepadEditor] = React.useState(false);
+  const [editorProfile, setEditorProfile] = React.useState('');
+  const [gamepadLayoutVersion, setGamepadLayoutVersion] = React.useState(0);
+  const [audioGain, setAudioGain] = React.useState(1);
+  const [portraitGamepadEditing, setPortraitGamepadEditing] =
+    React.useState(false);
+  const [openMicro, setOpenMicro] = React.useState(false);
+  const [isInPictureInPicture, setIsInPictureInPicture] = React.useState(false);
+  const isInPictureInPictureRef = React.useRef(false);
+  const [isRecording, setIsRecording] = React.useState(false);
+
+  React.useEffect(() => {
+    return () => {
+      gameRecorder.isRecording().then(recording => {
+        if (recording) {
+          gameRecorder.stopRecording().catch(() => {});
+        }
+      });
+    };
+  }, []);
+  const xHomeApiRef = React.useRef<any>(undefined);
+  const xCloudApiRef = React.useRef<any>(undefined);
+  const isRumbling = React.useRef(false);
+  const lastRumbleTime = React.useRef(0);
+  const lastRumbleValues = React.useRef({weak: 0, strong: 0, lt: 0, rt: 0});
+  const systemKeyboardTransactionRef = React.useRef<any>(null);
+  const handleExitRef = React.useRef<(off?: boolean) => void | Promise<void>>(
+    () => {},
+  );
+
+  // webrtc
+  const [webrtcClient, setWebrtcClient] = React.useState<any>(undefined);
+  const [remote, setRemote] = React.useState<any>(null);
+  const remoteStream = React.useRef<any>(null);
+  const audioGainRef = React.useRef(1);
+  const keepaliveInterval = React.useRef<any>(null);
+  const performanceInterval = React.useRef<any>(null);
+  const frameGenStatsSampleRef = React.useRef<any>(null);
+  const connectStateRef = React.useRef<any>('');
+  const reconnectTimerRef = React.useRef<any>(null);
+  const reconnectPendingRef = React.useRef(false);
+  const reconnectAttemptsRef = React.useRef(0);
+  const reconnectExhaustedRef = React.useRef(false);
+  const activeWebrtcClientRef = React.useRef<any>(null);
+  const initialSessionStartTime = React.useMemo(() => {
+    return getActiveStreamStartTime(
+      route.params?.streamType,
+      route.params?.sessionId,
+    );
+  }, [route.params?.sessionId, route.params?.streamType]);
+
+  const sessionStartTimeRef = React.useRef(initialSessionStartTime);
+  const sessionLimitSecondsRef = React.useRef(0);
+
+  const ensureSessionStartTime = React.useCallback(() => {
+    if (!sessionStartTimeRef.current) {
+      const active = getActiveStreamStartTime(
+        route.params?.streamType,
+        route.params?.sessionId,
+      );
+      sessionStartTimeRef.current = active > 0 ? active : Date.now();
+      saveActiveStreamStartTime(
+        route.params?.streamType,
+        route.params?.sessionId,
+        sessionStartTimeRef.current,
+        sessionLimitSecondsRef.current,
+      );
+    }
+    return sessionStartTimeRef.current;
+  }, [route.params?.sessionId, route.params?.streamType]);
+  const hasReminded15MinRef = React.useRef(false);
+  const hasReminded5MinRef = React.useRef(false);
+  const playtimeReminderTimerRef = React.useRef<any>(null);
+  const [playtimeReminder, setPlaytimeReminder] = React.useState<{
+    visible: boolean;
+    minutes: number;
+  }>({visible: false, minutes: 0});
+
+  const triggerPlaytimeReminder = React.useCallback(
+    (minutes: number) => {
+      setPlaytimeReminder({
+        visible: true,
+        minutes,
+      });
+      try {
+        Vibration.vibrate([0, 250, 150, 250]);
+      } catch {}
+      try {
+        GamepadManager.vibrate(
+          400,
+          0.5,
+          0.5,
+          0.2,
+          0.2,
+          settings?.rumble_intensity || 3,
+        );
+      } catch {}
+      if (playtimeReminderTimerRef.current) {
+        clearTimeout(playtimeReminderTimerRef.current);
+      }
+      playtimeReminderTimerRef.current = setTimeout(() => {
+        setPlaytimeReminder(prev => ({...prev, visible: false}));
+      }, 8500);
+    },
+    [settings?.rumble_intensity],
+  );
+
+  const sessionLimitSeconds = React.useMemo(() => {
+    return getCloudSessionTimeLimitSeconds({
+      streamType: route.params?.streamType,
+      accountTier: route.params?.accountTier,
+      titleItem: route.params?.titleItem,
+      serverLimitSeconds: xCloudApiRef.current?.getSessionLimitInSeconds?.(),
+    });
+  }, [
+    route.params?.streamType,
+    route.params?.accountTier,
+    route.params?.titleItem,
+  ]);
+
+  React.useEffect(() => {
+    sessionLimitSecondsRef.current = sessionLimitSeconds;
+  }, [sessionLimitSeconds]);
+
+  const gpDownEventListener = React.useRef<any>(undefined);
+  const gpUpEventListener = React.useRef<any>(undefined);
+  const dpDownEventListener = React.useRef<any>(undefined);
+  const dpUpEventListener = React.useRef<any>(undefined);
+  const stickEventListener = React.useRef<any>(undefined);
+  const triggerEventListener = React.useRef<any>(undefined);
+  const isRightstickMoving = React.useRef(false);
+  const physicalRightStick = React.useRef({x: 0, y: 0});
+  const gyroStick = React.useRef({x: 0, y: 0});
+  const timer = React.useRef<any>(undefined);
+  const menuLongPressTimer = React.useRef<any>(undefined);
+  const menuLongPressTriggered = React.useRef(false);
+  const frameTimer = React.useRef<any>(undefined);
+  const audioRumbleTimer = React.useRef<any>(undefined);
+  const appStateSubscription = React.useRef<any>(undefined);
+  const pipEventListener = React.useRef<any>(undefined);
+  const audioGainEventListener = React.useRef<any>(undefined);
+  const isRequestExit = React.useRef(false);
+  const isConnected = React.useRef(false);
+  const optionsDialogOpenRef = React.useRef(false);
+  const macroSequenceTimersRef = React.useRef<any[]>([]);
+  const activeMacroButtonsRef = React.useRef<Set<string>>(new Set());
+  const activeMacroSticksRef = React.useRef<Set<string>>(new Set());
+  const isMacroLoopRunningRef = React.useRef(false);
+  const manualLeftThumbPressedRef = React.useRef(false);
+  const autoSprintLeftThumbPressedRef = React.useRef(false);
+  const supportedSystemUis = React.useMemo(() => [10, 19], []);
+  const orientationLockTimer = React.useRef<any>(null);
+  const orientationLayoutTimer = React.useRef<any>(null);
+  const returnOrientationRef = React.useRef<ScreenOrientation | null>(null);
+  const shouldRestoreOrientationRef = React.useRef(false);
+
+  const isTriggerWork = React.useRef(false);
+
+  const syncLeftThumbButton = React.useCallback((state: any) => {
+    if (!state || state !== gpState) {
+      return;
+    }
+    state.LeftThumb =
+      manualLeftThumbPressedRef.current || autoSprintLeftThumbPressedRef.current
+        ? 1
+        : 0;
+  }, []);
+
+  const setManualLeftThumbPressed = React.useCallback(
+    (pressed: boolean) => {
+      manualLeftThumbPressedRef.current = pressed;
+      syncLeftThumbButton(gpState);
+    },
+    [syncLeftThumbButton],
+  );
+
+  const syncAutoSprint = React.useCallback(
+    (state: any, autoSprintEnabled: boolean) => {
+      if (!state || state !== gpState) {
+        return;
+      }
+
+      autoSprintLeftThumbPressedRef.current =
+        autoSprintEnabled &&
+        (Math.abs(state.LeftThumbXAxis) > 0 ||
+          Math.abs(state.LeftThumbYAxis) > 0);
+      syncLeftThumbButton(state);
+    },
+    [syncLeftThumbButton],
+  );
+
+  const clearOrientationTimers = React.useCallback(() => {
+    if (orientationLockTimer.current) {
+      clearTimeout(orientationLockTimer.current);
+      orientationLockTimer.current = null;
+    }
+    if (orientationLayoutTimer.current) {
+      clearTimeout(orientationLayoutTimer.current);
+      orientationLayoutTimer.current = null;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    let isActive = true;
+    shouldRestoreOrientationRef.current = false;
+    returnOrientationRef.current = null;
+
+    getCurrentScreenOrientation().then(orientation => {
+      if (isActive) {
+        returnOrientationRef.current = orientation;
+      }
+    });
+
+    const handleDeviceOrientationChange = (orientation: string) => {
+      if (portraitMode) {
+        return;
+      }
+
+      if (orientation === 'LANDSCAPE-LEFT') {
+        Orientation.lockToLandscapeLeft();
+      } else if (orientation === 'LANDSCAPE-RIGHT') {
+        Orientation.lockToLandscapeRight();
+      }
+    };
+
+    if (!portraitMode) {
+      Orientation.addDeviceOrientationListener(handleDeviceOrientationChange);
+    }
+
+    orientationLockTimer.current = setTimeout(() => {
+      if (portraitMode) {
+        Orientation.lockToPortrait();
+      } else {
+        Orientation.lockToLandscape();
+      }
+
+      orientationLayoutTimer.current = setTimeout(() => {}, 100);
+    }, 500);
+
+    return () => {
+      isActive = false;
+      clearOrientationTimers();
+      if (!portraitMode) {
+        Orientation.removeDeviceOrientationListener(
+          handleDeviceOrientationChange,
+        );
+      }
+
+      if (shouldRestoreOrientationRef.current) {
+        applyScreenOrientation(returnOrientationRef.current);
+        shouldRestoreOrientationRef.current = false;
+      } else {
+        Orientation.unlockAllOrientations();
+      }
+    };
+  }, [
+    clearOrientationTimers,
+    portraitMode,
+    route.params?.sessionId,
+    route.params?.streamType,
+  ]);
+
+  const markOrientationForRestore = React.useCallback(() => {
+    clearOrientationTimers();
+    shouldRestoreOrientationRef.current = true;
+  }, [clearOrientationTimers]);
+
+  const restorePreviousOrientation = React.useCallback(() => {
+    applyScreenOrientation(returnOrientationRef.current);
+  }, []);
+
+  const closeSystemKeyboardModal = React.useCallback(() => {
+    NativeInputDialog?.dismiss?.();
+    systemKeyboardTransactionRef.current = null;
+  }, []);
+
+  const completeSystemKeyboard = React.useCallback(
+    (text: string) => {
+      const transaction = systemKeyboardTransactionRef.current;
+      if (
+        transaction &&
+        transaction.isTransaction &&
+        transaction.completion &&
+        typeof transaction.completion.complete === 'function'
+      ) {
+        transaction.completion.complete(
+          JSON.stringify({
+            Text: text,
+          }),
+        );
+      }
+      closeSystemKeyboardModal();
+    },
+    [closeSystemKeyboardModal],
+  );
+
+  const cancelSystemKeyboard = React.useCallback(() => {
+    const transaction = systemKeyboardTransactionRef.current;
+    if (
+      transaction &&
+      transaction.isTransaction &&
+      transaction.completion &&
+      typeof transaction.completion.cancel === 'function'
+    ) {
+      transaction.completion.cancel();
+    }
+    closeSystemKeyboardModal();
+  }, [closeSystemKeyboardModal]);
+
+  const showNativeInputDialog = React.useCallback(async (options: any) => {
+    if (isInPictureInPictureRef.current || !NativeInputDialog?.showTextInput) {
+      return null;
+    }
+
+    try {
+      return await NativeInputDialog.showTextInput(options);
+    } catch (error) {
+      return null;
+    }
+  }, []);
+
+  const openSystemKeyboardDialog = React.useCallback(
+    async (event: any, payload: any) => {
+      systemKeyboardTransactionRef.current = {
+        id: event.id,
+        isTransaction: event.isTransaction,
+        completion: event.completion,
+      };
+
+      if (
+        event.isTransaction &&
+        event.completion &&
+        typeof event.completion.setOnRemoteCancellation === 'function'
+      ) {
+        const transactionId = event.id;
+        event.completion.setOnRemoteCancellation(() => {
+          if (systemKeyboardTransactionRef.current?.id === transactionId) {
+            systemKeyboardTransactionRef.current = null;
+            NativeInputDialog?.dismiss?.();
+          }
+        });
+      }
+
+      const result = await showNativeInputDialog({
+        title: payload.TitleText || '',
+        message: payload.DescriptionText || '',
+        text: payload.DefaultText || '',
+        hint: t('Text'),
+        inputScope: payload.InputScope ?? 0,
+        maxLength:
+          typeof payload.MaxLength === 'number' && payload.MaxLength > 0
+            ? payload.MaxLength
+            : 0,
+        confirmText: t('Confirm'),
+        cancelText: t('Cancel'),
+      });
+
+      if (systemKeyboardTransactionRef.current?.id !== event.id) {
+        return;
+      }
+
+      if (result?.action === 'confirm') {
+        completeSystemKeyboard(result.text || '');
+      } else {
+        cancelSystemKeyboard();
+      }
+    },
+    [cancelSystemKeyboard, completeSystemKeyboard, showNativeInputDialog, t],
+  );
+
+  const handleSystemUiEvent = React.useCallback(
+    (event: any) => {
+      if (!event || !event.target) {
+        return false;
+      }
+
+      if (isRequestExit.current) {
+        if (
+          event.isTransaction &&
+          event.completion &&
+          typeof event.completion.cancel === 'function'
+        ) {
+          event.completion.cancel();
+        }
+        return true;
+      }
+
+      if (event.target === SYSTEM_UI_TARGET_SHOW_MESSAGE_DIALOG) {
+        const payload = event.payload || {};
+        const title = payload.TitleText || '';
+        const content = payload.ContentText || '';
+        const commandButtons = [
+          {
+            label: payload.CommandLabel1,
+            result: 0,
+          },
+          {
+            label: payload.CommandLabel2,
+            result: 1,
+          },
+          {
+            label: payload.CommandLabel3,
+            result: 2,
+          },
+        ];
+        let hasResponded = false;
+
+        const completeWithResult = (result?: number) => {
+          if (hasResponded) {
+            return;
+          }
+          hasResponded = true;
+          if (
+            event.isTransaction &&
+            event.completion &&
+            typeof event.completion.complete === 'function'
+          ) {
+            event.completion.complete(
+              JSON.stringify({
+                Result: result,
+              }),
+            );
+          }
+        };
+
+        const buttons: Array<any> = [];
+        commandButtons.forEach(({label, result}) => {
+          if (!label) {
+            return;
+          }
+          const buttonText = String(label);
+          buttons.push({
+            text: buttonText,
+            onPress: () => {
+              completeWithResult(result);
+              setTimeout(() => {
+                if (buttonText.toUpperCase().indexOf('QUIT') !== -1) {
+                  handleExitRef.current(false);
+                }
+              }, 500);
+            },
+          });
+        });
+
+        if (!buttons.length) {
+          buttons.push({
+            text: t('Confirm'),
+            onPress: () => {
+              const fallbackIndex =
+                typeof payload.DefaultIndex === 'number'
+                  ? payload.DefaultIndex
+                  : 0;
+              completeWithResult(fallbackIndex);
+            },
+          });
+        }
+
+        Alert.alert(title, content, buttons, {
+          cancelable: true,
+          onDismiss: () => {
+            if (!event.isTransaction) {
+              return;
+            }
+
+            const dismissIndex =
+              typeof payload.CancelIndex === 'number'
+                ? payload.CancelIndex
+                : typeof payload.DefaultIndex === 'number'
+                ? payload.DefaultIndex
+                : 0;
+
+            // Message dialog should always complete with a Result value.
+            // Defer to avoid racing with button onPress callback order on Android.
+            setTimeout(() => {
+              completeWithResult(dismissIndex);
+            }, 0);
+          },
+        });
+
+        return true;
+      }
+
+      if (event.target === SYSTEM_UI_TARGET_SHOW_VIRTUAL_KEYBOARD) {
+        const payload = event.payload || {};
+        openSystemKeyboardDialog(event, payload);
+        return true;
+      }
+
+      return false;
+    },
+    [openSystemKeyboardDialog, t],
+  );
+
+  const handleStreamingMessage = React.useCallback((event: any) => {
+    if (!event || typeof event.target !== 'string') {
+      return false;
+    }
+
+    if (!event.target.startsWith(STREAMING_TOUCHCONTROLS_SCOPE)) {
+      return false;
+    }
+
+    if (
+      event.isTransaction &&
+      event.completion &&
+      typeof event.completion.cancel === 'function'
+    ) {
+      event.completion.cancel();
+    }
+
+    return true;
+  }, []);
+
+  const applyRemoteAudioGain = React.useCallback((gain?: number) => {
+    const nextGain =
+      typeof gain === 'number' && Number.isFinite(gain)
+        ? Math.max(0, Math.min(10, gain))
+        : audioGainRef.current;
+    const audioTracks = remoteStream.current?.getAudioTracks?.() ?? [];
+    audioTracks.forEach((track: any) => {
+      track?._setVolume?.(nextGain);
+    });
+  }, []);
+
+  const handleAudioGainChange = React.useCallback(
+    (value: number) => {
+      const nextGain = Math.max(0, Math.min(10, Math.round(value)));
+      audioGainRef.current = nextGain;
+      setAudioGain(nextGain);
+      applyRemoteAudioGain(nextGain);
+    },
+    [applyRemoteAudioGain],
+  );
+
+  const getStreamDestination = React.useCallback(() => {
+    return route.params?.streamType === 'cloud' ? 'Cloud' : 'Home';
+  }, [route.params?.streamType]);
+
+  const finishStreamExit = React.useCallback(() => {
+    setIsExiting(false);
+    setLoading(false);
+    markOrientationForRestore();
+    restorePreviousOrientation();
+    FullScreenManager.immersiveModeOff();
+    const currentSettings = getSettings();
+    const isShowReport = String(currentSettings.show_session_report) === 'true';
+    const sessionReport = isShowReport
+      ? sessionStatsTracker.finishSession()
+      : undefined;
+    navigation.navigate({
+      name: getStreamDestination(),
+      params: {needRefresh: true, sessionReport},
+    });
+  }, [
+    getStreamDestination,
+    markOrientationForRestore,
+    navigation,
+    restorePreviousOrientation,
+  ]);
+
+  const pureStreamExit = React.useCallback(() => {
+    markOrientationForRestore();
+    restorePreviousOrientation();
+    navigation.navigate({
+      name: getStreamDestination(),
+      params: {needRefresh: false, sessionReport: false},
+    });
+  }, [
+    getStreamDestination,
+    markOrientationForRestore,
+    navigation,
+    restorePreviousOrientation,
+  ]);
+
+  const waitStopStream = React.useCallback(async (api: any) => {
+    try {
+      await stopStreamWithTimeout(api);
+    } catch (error) {
+      log.warn('stopStream failed or timed out:', error);
+    }
+  }, []);
+
+  const scheduleReconnect = React.useCallback(() => {
+    if (
+      route.params?.streamType !== 'cloud' ||
+      isRequestExit.current ||
+      !isConnected.current
+    ) {
+      return false;
+    }
+
+    if (reconnectExhaustedRef.current) {
+      return true;
+    }
+
+    if (reconnectTimerRef.current || reconnectPendingRef.current) {
+      return true;
+    }
+
+    if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+      reconnectExhaustedRef.current = true;
+      setLoading(true);
+      Alert.alert(t('Warning'), t('Reconnected failed'), [
+        {
+          text: t('Confirm'),
+          style: 'default',
+          onPress: () => {
+            handleExitRef.current();
+          },
+        },
+      ]);
+      return true;
+    }
+
+    reconnectAttemptsRef.current += 1;
+    setLoading(true);
+    setLoadingText(
+      `${t('Connecting...')} (${
+        reconnectAttemptsRef.current
+      }/${MAX_RECONNECT_ATTEMPTS})`,
+    );
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      reconnectPendingRef.current = true;
+      if (!isRequestExit.current) {
+        setWebrtcClient(new webRTCClient());
+      }
+    }, RECONNECT_INTERVAL_MS);
+
+    return true;
+  }, [route.params?.streamType, t]);
+
+  // event
+  const usbGpEventListener = React.useRef<any>(undefined);
+  const sensorEventListener = React.useRef<any>(undefined);
+
+  React.useEffect(() => {
+    GamepadManager.setCurrentScreen('stream');
+    suspendGamepadNavigation();
+    const isUsbMode = route.params?.isUsbMode || false;
+    const usbController = route.params?.usbController || 'Xbox360Controller';
+
+    const _settings = getSettings();
+    setSettings(_settings);
+    resetGamepadState(gpState, 0);
+    manualLeftThumbPressedRef.current = false;
+    autoSprintLeftThumbPressedRef.current = false;
+    const coopDeviceIndexMap = new Map<number, number>();
+    const coopGpStates = _settings.coop
+      ? [gpState, createGamepadState(1)]
+      : null;
+    if (coopGpStates) {
+      resetGamepadState(coopGpStates[0], 0);
+      resetGamepadState(coopGpStates[1], 1);
+    }
+
+    const sweap = obj => {
+      return Object.fromEntries(
+        Object.entries(obj).map(([key, value]) => [value, key]),
+      );
+    };
+
+    if (isUsbMode) {
+      defaultMaping = XBOX_360_GAMEPAD_MAPING;
+      // console.log('defaultMaping:', defaultMaping);
+    }
+    let gpMaping = sweap(defaultMaping);
+    if (!isUsbMode && _settings.native_gamepad_maping) {
+      gpMaping = sweap(_settings.native_gamepad_maping);
+    }
+    const isSdlKernel = !isUsbMode && _settings.gamepad_kernal === 'SDL';
+
+    const normaliseAxis = value => {
+      if (_settings.dead_zone) {
+        if (Math.abs(value) < _settings.dead_zone) {
+          return 0;
+        }
+
+        value = value - Math.sign(value) * _settings.dead_zone;
+        value /= 1.0 - _settings.dead_zone;
+
+        // Joystick edge compensation
+        const THRESHOLD = 0.8;
+        const MAX_VALUE = 1;
+        const compensation = _settings.edge_compensation / 100 || 0;
+        if (Math.abs(value) > THRESHOLD) {
+          if (value > 0) {
+            value = Math.min(value + compensation, MAX_VALUE);
+          } else {
+            value = Math.max(value - compensation, -MAX_VALUE);
+          }
+        }
+        return value;
+      } else {
+        return value;
+      }
+    };
+
+    if (portraitMode) {
+      FullScreenManager.immersiveModeOff();
+    } else {
+      FullScreenManager.immersiveModeOn();
+    }
+
+    const stopVibrate = () => {
+      GamepadManager.vibrate(10, 0, 0, 0, 0, 3);
+      isRumbling.current = false;
+    };
+
+    const resolveGamepadState = (rawGamepadIndex = 0) => {
+      if (!_settings.coop || !coopGpStates) {
+        return gpState;
+      }
+
+      const deviceIndex =
+        typeof rawGamepadIndex === 'number' ? rawGamepadIndex : -1;
+      if (deviceIndex < 0) {
+        return null;
+      }
+      if (!coopDeviceIndexMap.has(deviceIndex)) {
+        if (coopDeviceIndexMap.size >= coopGpStates.length) {
+          return null;
+        }
+        coopDeviceIndexMap.set(deviceIndex, coopDeviceIndexMap.size);
+      }
+
+      const playerIndex = coopDeviceIndexMap.get(deviceIndex);
+      if (playerIndex === undefined) {
+        return null;
+      }
+      return coopGpStates[playerIndex];
+    };
+
+    const resetButtonState = () => {
+      GAMEPAD_DIGITAL_KEYS.forEach(k => {
+        gpState[k] = 0;
+      });
+      manualLeftThumbPressedRef.current = false;
+      syncLeftThumbButton(gpState);
+    };
+
+    const getPressedButtons = combinedValue => {
+      const pressedButtons: any = [];
+      for (const [button, value] of Object.entries(XBOX_360_GAMEPAD_MAPING)) {
+        // eslint-disable-next-line no-bitwise
+        if ((combinedValue & value) === value) {
+          pressedButtons.push(button);
+        }
+      }
+      return pressedButtons;
+    };
+
+    const setGpState = combinedKeys => {
+      manualLeftThumbPressedRef.current = combinedKeys.includes('LeftThumb');
+      GAMEPAD_DIGITAL_KEYS.forEach(k => {
+        if (k === 'LeftThumb') {
+          return;
+        }
+        if (combinedKeys.includes(k)) {
+          gpState[k] = 1;
+        } else {
+          gpState[k] = 0;
+        }
+      });
+      syncLeftThumbButton(gpState);
+    };
+
+    const eventEmitter = new NativeEventEmitter();
+    PipManager?.setAutoPipEnabled?.(false);
+    appStateSubscription.current && appStateSubscription.current.remove();
+    appStateSubscription.current = AppState.addEventListener(
+      'change',
+      async state => {
+        if (
+          !Platform.isTV &&
+          !portraitMode &&
+          state === 'background' &&
+          isConnected.current &&
+          _settings.picture_in_picture &&
+          !isInPictureInPictureRef.current
+        ) {
+          try {
+            const enteredPip = await PipManager?.enterPipMode?.();
+            if (enteredPip) {
+              return;
+            }
+          } catch (error) {}
+        }
+      },
+    );
+
+    pipEventListener.current = eventEmitter.addListener(
+      PICTURE_IN_PICTURE_MODE_CHANGED,
+      event => {
+        const nextIsInPip = !!event?.isInPictureInPictureMode;
+        isInPictureInPictureRef.current = nextIsInPip;
+        setIsInPictureInPicture(nextIsInPip);
+        if (nextIsInPip) {
+          setShowModal(false);
+          setShowGamepadEditor(false);
+          NativeInputDialog?.dismiss?.();
+          macroSequenceTimersRef.current.forEach(timeoutId =>
+            clearTimeout(timeoutId),
+          );
+          macroSequenceTimersRef.current = [];
+          closeSystemKeyboardModal();
+        } else if (!portraitMode) {
+          Orientation.lockToLandscape();
+        }
+      },
+    );
+    audioGainEventListener.current = eventEmitter.addListener(
+      'NativeInputDialogAudioGainChange',
+      event => {
+        handleAudioGainChange(Number(event?.value ?? 1));
+      },
+    );
+
+    // USB Mode
+    if (isUsbMode) {
+      log.info('Entry usb mode');
+      log.info('Usb controller: ' + usbController);
+      if (usbController === DUALSENSE) {
+        UsbRumbleManager.setDsController(
+          16,
+          124,
+          16,
+          0,
+          0,
+          0,
+          0,
+          0,
+          _settings.left_trigger_type || 0,
+          _settings.left_trigger_effects || [],
+          _settings.right_trigger_type || 0,
+          _settings.right_trigger_effects || [],
+        );
+      }
+      usbGpEventListener.current = eventEmitter.addListener(
+        'onGamepadReport',
+        params => {
+          const {
+            keyCode,
+            leftTrigger,
+            rightTrigger,
+            leftStickX,
+            leftStickY,
+            rightStickX,
+            rightStickY,
+          } = params;
+
+          // console.log('gpMaping:', gpMaping);
+          // console.log('usb keyCode:', keyCode);
+          // Button
+          if (keyCode !== 0) {
+            const keys = getPressedButtons(keyCode);
+            setGpState(keys);
+          } else {
+            resetButtonState();
+          }
+
+          // Trigger
+          gpState.LeftTrigger = leftTrigger;
+          gpState.RightTrigger = rightTrigger;
+
+          // Joystick
+          gpState.LeftThumbXAxis = normaliseAxis(leftStickX);
+          gpState.LeftThumbYAxis = normaliseAxis(leftStickY);
+          syncAutoSprint(gpState, !!_settings.auto_sprint);
+          gpState.RightThumbXAxis = normaliseAxis(rightStickX);
+          gpState.RightThumbYAxis = normaliseAxis(rightStickY);
+        },
+      );
+
+      timer.current = setInterval(() => {
+        webrtcClient && webrtcClient.setGamepadState(gpState);
+      }, 1000 / _settings.polling_rate);
+    } else {
+      log.info(isSdlKernel ? 'Entry SDL gamepad mode' : 'Entry normal mode');
+      if (isSdlKernel) {
+        Promise.resolve(
+          SdlGamepadManager?.startController?.(
+            _settings.dead_zone ?? 0,
+            _settings.edge_compensation ?? 0,
+            !!_settings.short_trigger,
+            false,
+          ),
+        ).catch(() => {});
+      }
+      gpDownEventListener.current = eventEmitter.addListener(
+        'onGamepadKeyDown',
+        event => {
+          // console.log('onGamepadKeyDown:', event);
+          // e.g. {"controllerIndex": 0, "deviceId": 31, "keyCode": 100}
+          const keyCode = event.keyCode;
+          const keyName = gpMaping[keyCode];
+          if (!keyName) {
+            return;
+          }
+          const targetState = resolveGamepadState(event.gamepadIndex);
+          if (!targetState) {
+            return;
+          }
+
+          if (keyName === 'LeftTrigger' || keyName === 'RightTrigger') {
+            if (_settings.short_trigger) {
+              targetState[keyName] = 1;
+            }
+          } else {
+            targetState[keyName] = 1;
+          }
+          if (keyName === 'LeftThumb' && targetState === gpState) {
+            setManualLeftThumbPressed(true);
+          }
+
+          if (webrtcClient) {
+            if (_settings.coop && coopGpStates) {
+              webrtcClient.setGamepadState(coopGpStates);
+            } else {
+              webrtcClient.setGamepadState(targetState);
+            }
+          }
+
+          if (
+            keyName === 'Menu' &&
+            !portraitMode &&
+            !isInPictureInPictureRef.current &&
+            !menuLongPressTimer.current
+          ) {
+            menuLongPressTriggered.current = false;
+            menuLongPressTimer.current = setTimeout(() => {
+              menuLongPressTimer.current = undefined;
+              menuLongPressTriggered.current = true;
+              targetState.Menu = 0;
+              setShowModal(true);
+            }, 2000);
+          }
+        },
+      );
+
+      gpUpEventListener.current = eventEmitter.addListener(
+        'onGamepadKeyUp',
+        event => {
+          // console.log('onGamepadKeyUp:', event);
+          const keyCode = event.keyCode;
+          const keyName = gpMaping[keyCode];
+          if (!keyName) {
+            return;
+          }
+          const targetState = resolveGamepadState(event.gamepadIndex);
+          if (!targetState) {
+            return;
+          }
+
+          if (keyName === 'Menu') {
+            if (menuLongPressTimer.current) {
+              clearTimeout(menuLongPressTimer.current);
+              menuLongPressTimer.current = undefined;
+            }
+            if (menuLongPressTriggered.current) {
+              targetState.Menu = 0;
+              menuLongPressTriggered.current = false;
+              if (webrtcClient) {
+                if (_settings.coop && coopGpStates) {
+                  webrtcClient.setGamepadState(coopGpStates);
+                } else {
+                  webrtcClient.setGamepadState(targetState);
+                }
+              }
+              return;
+            }
+          }
+
+          if (keyName === 'LeftTrigger' || keyName === 'RightTrigger') {
+            if (_settings.short_trigger) {
+              targetState[keyName] = 0;
+            }
+          } else {
+            targetState[keyName] = 0;
+          }
+          if (keyName === 'LeftThumb' && targetState === gpState) {
+            setManualLeftThumbPressed(false);
+          }
+          if (webrtcClient) {
+            if (_settings.coop && coopGpStates) {
+              webrtcClient.setGamepadState(coopGpStates);
+            } else {
+              webrtcClient.setGamepadState(targetState);
+            }
+          }
+        },
+      );
+
+      const syncDpadState = (pressedKeys, gamepadIndex = 0) => {
+        const activeKeys = new Set(pressedKeys ?? []);
+        const _gpMaping = _settings.native_gamepad_maping ?? defaultMaping;
+        const targetState = resolveGamepadState(gamepadIndex);
+        if (!targetState) {
+          return;
+        }
+
+        ['DPadUp', 'DPadDown', 'DPadLeft', 'DPadRight'].forEach(direction => {
+          const keyCode = _gpMaping[direction];
+          const keyName = gpMaping[keyCode];
+          if (!keyName) {
+            return;
+          }
+          targetState[keyName] = activeKeys.has(keyCode) ? 1 : 0;
+        });
+      };
+
+      dpDownEventListener.current = eventEmitter.addListener(
+        'onDpadKeyDown',
+        event => {
+          // console.log('onDpadKeyDown:', event);
+          const pressedKeys = Array.isArray(event.dpadIdxList)
+            ? event.dpadIdxList
+            : event.dpadIdx >= 0
+            ? [event.dpadIdx]
+            : [];
+          syncDpadState(pressedKeys, event.gamepadIndex);
+          if (webrtcClient) {
+            const targetState = resolveGamepadState(event.gamepadIndex);
+            if (_settings.coop && coopGpStates) {
+              webrtcClient.setGamepadState(coopGpStates);
+            } else if (targetState) {
+              webrtcClient.setGamepadState(targetState);
+            }
+          }
+        },
+      );
+
+      dpUpEventListener.current = eventEmitter.addListener(
+        'onDpadKeyUp',
+        event => {
+          // console.log('onDpadKeyUp:', event);
+          syncDpadState([], event.gamepadIndex);
+          if (webrtcClient) {
+            const targetState = resolveGamepadState(event.gamepadIndex);
+            if (_settings.coop && coopGpStates) {
+              webrtcClient.setGamepadState(coopGpStates);
+            } else if (targetState) {
+              webrtcClient.setGamepadState(targetState);
+            }
+          }
+        },
+      );
+
+      stickEventListener.current = eventEmitter.addListener(
+        'onStickMove',
+        event => {
+          // console.log('onStickMove:', event);
+          const targetState = resolveGamepadState(event.gamepadIndex);
+          if (!targetState) {
+            return;
+          }
+
+          targetState.LeftThumbXAxis = normaliseAxis(event.leftStickX);
+          targetState.LeftThumbYAxis = normaliseAxis(event.leftStickY);
+          syncAutoSprint(targetState, !!_settings.auto_sprint);
+
+          const normRx = normaliseAxis(event.rightStickX);
+          const normRy = normaliseAxis(event.rightStickY);
+          physicalRightStick.current = {x: normRx, y: normRy};
+
+          if (Math.abs(normRx) > 0.05 || Math.abs(normRy) > 0.05) {
+            isRightstickMoving.current = true;
+          } else {
+            isRightstickMoving.current = false;
+          }
+
+          targetState.RightThumbXAxis = Math.max(
+            -1,
+            Math.min(1, Number((normRx + gyroStick.current.x).toFixed(3))),
+          );
+          targetState.RightThumbYAxis = Math.max(
+            -1,
+            Math.min(1, Number((normRy + gyroStick.current.y).toFixed(3))),
+          );
+        },
+      );
+
+      triggerEventListener.current = eventEmitter.addListener(
+        'onTrigger',
+        event => {
+          const targetState = resolveGamepadState(event.gamepadIndex);
+          if (!targetState) {
+            return;
+          }
+
+          // Notice: some controllers will emit onTrigger and onGamepadKeyDown at the same time
+
+          if (
+            !isTriggerWork.current &&
+            (event.leftTrigger > 0 || event.rightTrigger > 0)
+          ) {
+            isTriggerWork.current = true;
+          }
+
+          if (!isTriggerWork.current) {
+            return;
+          }
+
+          // Short trigger
+          if (_settings.short_trigger) {
+            triggerMax = _settings.dead_zone;
+            targetState.LeftTrigger = event.leftTrigger >= triggerMax ? 1 : 0;
+          } else {
+            // Line trigger
+            targetState.LeftTrigger =
+              event.leftTrigger >= 0.05 ? event.leftTrigger : 0;
+          }
+
+          // Short trigger
+          if (_settings.short_trigger) {
+            triggerMax = _settings.dead_zone;
+            targetState.RightTrigger = event.rightTrigger >= triggerMax ? 1 : 0;
+          } else {
+            // Line trigger
+            targetState.RightTrigger =
+              event.rightTrigger >= 0.05 ? event.rightTrigger : 0;
+          }
+        },
+      );
+
+      // Send gamepad state to webrtc
+      timer.current = setInterval(() => {
+        if (webrtcClient) {
+          if (_settings.coop && coopGpStates) {
+            webrtcClient.setGamepadState(coopGpStates);
+          } else {
+            webrtcClient.setGamepadState(gpState);
+          }
+        }
+      }, 1000 / _settings.polling_rate);
+    }
+
+    // Sensor
+    if (_settings.sensor) {
+      const sensorManager =
+        _settings.sensor === 2 ? GamepadSensorModule : SensorModule;
+
+      sensorManager.startSensor(
+        _settings.sensor_sensitivity_x,
+        _settings.sensor_sensitivity_y,
+      );
+
+      sensorEventListener.current = eventEmitter.addListener(
+        'SensorData',
+        params => {
+          const {x, y} = params;
+
+          let stickX = x / 32767;
+          let stickY = y / 32767;
+
+          const scaleX =
+            _settings.sensor_sensitivity_x > 10000
+              ? _settings.sensor_sensitivity_x / 10000
+              : 1;
+
+          const scaleY =
+            _settings.sensor_sensitivity_y > 10000
+              ? _settings.sensor_sensitivity_y / 10000
+              : 1;
+
+          switch (_settings.sensor_invert) {
+            case 1: // x
+              stickX = -stickX;
+              break;
+            case 2: // y
+              stickY = -stickY;
+              break;
+            case 3: // All
+              stickX = -stickX;
+              stickY = -stickY;
+              break;
+            case 4: // x <-> y
+              const temp = stickX;
+              stickX = stickY;
+              stickY = temp;
+              break;
+            default:
+              break;
+          }
+
+          let isGyroTriggerActive = false;
+          if (_settings.sensor_type === 1) {
+            isGyroTriggerActive = gpState.LeftTrigger >= _settings.dead_zone;
+          } else if (_settings.sensor_type === 2) {
+            isGyroTriggerActive = gpState.LeftShoulder > 0;
+          } else if (_settings.sensor_type === 3) {
+            isGyroTriggerActive =
+              gpState.LeftTrigger >= _settings.dead_zone ||
+              gpState.LeftShoulder > 0;
+          } else if (_settings.sensor_type === 4) {
+            isGyroTriggerActive = true;
+          }
+
+          if (isGyroTriggerActive) {
+            gyroStick.current = {
+              x: Number((stickX * scaleX).toFixed(3)),
+              y: Number((stickY * scaleY).toFixed(3)),
+            };
+          } else {
+            gyroStick.current = {x: 0, y: 0};
+          }
+
+          const baseStickX = physicalRightStick.current.x;
+          const baseStickY = physicalRightStick.current.y;
+
+          gpState.RightThumbXAxis = Math.max(
+            -1,
+            Math.min(1, Number((baseStickX + gyroStick.current.x).toFixed(3))),
+          );
+          gpState.RightThumbYAxis = Math.max(
+            -1,
+            Math.min(1, Number((baseStickY + gyroStick.current.y).toFixed(3))),
+          );
+        },
+      );
+    }
+
+    // Back action
+    const beforeRemoveListener = navigation.addListener('beforeRemove', e => {
+      stopVibrate();
+      if (portraitMode && e.data.action.type === 'GO_BACK') {
+        e.preventDefault();
+        Alert.alert(t('Warning'), t('Exit stream?'), [
+          {
+            text: t('Cancel'),
+            style: 'cancel',
+          },
+          {
+            text: t('Confirm'),
+            style: 'destructive',
+            onPress: async () => {
+              const _streamApi =
+                route.params?.streamType === 'cloud'
+                  ? xCloudApiRef.current
+                  : xHomeApiRef.current;
+              isRequestExit.current = true;
+              setLoading(true);
+              setLoadingText(t('Disconnecting...'));
+              setIsExiting(true);
+              webrtcClient && webrtcClient.close();
+              markOrientationForRestore();
+              await waitStopStream(_streamApi);
+              finishStreamExit();
+            },
+          },
+        ]);
+        return;
+      }
+      if (Platform.isTV) {
+        if (e.data.action.type !== 'GO_BACK') {
+          navigation.dispatch(e.data.action);
+        } else {
+          // Exit directly in Android TV
+          const _streamApi =
+            route.params?.streamType === 'cloud'
+              ? xCloudApiRef.current
+              : xHomeApiRef.current;
+          isRequestExit.current = true;
+          setLoading(true);
+          setIsExiting(true);
+          waitStopStream(_streamApi).then(finishStreamExit);
+        }
+      } else {
+        if (e.data.action.type !== 'GO_BACK') {
+          navigation.dispatch(e.data.action);
+        } else {
+          e.preventDefault();
+
+          // Show confirm modal
+          setShowModal(true);
+          GamepadManager.setCurrentScreen('');
+          resumeGamepadNavigation();
+        }
+      }
+    });
+
+    if (route.params?.sessionId) {
+      log.info('Stream screen receive sessionId:', route.params?.sessionId);
+    }
+    if (route.params?.streamType) {
+      log.info('Stream screen receive streamType:', route.params?.streamType);
+    }
+
+    if (!streamApi) {
+      if (route.params?.streamType === 'cloud') {
+        if (streamingTokens.xCloudToken) {
+          const _xCloudApi = new XcloudApi(
+            streamingTokens.xCloudToken.getDefaultRegion().baseUri,
+            streamingTokens.xCloudToken.data.gsToken,
+            'cloud',
+            authentication,
+          );
+          setStreamApi(_xCloudApi);
+          xCloudApiRef.current = _xCloudApi;
+        }
+      } else {
+        if (streamingTokens.xHomeToken) {
+          const _xHomeApi = new XcloudApi(
+            streamingTokens.xHomeToken.getDefaultRegion().baseUri,
+            streamingTokens.xHomeToken.data.gsToken,
+            'home',
+            authentication,
+          );
+          setStreamApi(_xHomeApi);
+          xHomeApiRef.current = _xHomeApi;
+        }
+      }
+    }
+
+    if (streamApi && webrtcClient === undefined) {
+      setWebrtcClient(new webRTCClient());
+    }
+
+    if (streamApi && webrtcClient !== undefined) {
+      activeWebrtcClientRef.current = webrtcClient;
+      reconnectPendingRef.current = false;
+      webrtcClient.init();
+
+      remoteStream.current = new MediaStream(undefined);
+
+      webrtcClient.setPollRate(_settings.polling_rate);
+      webrtcClient.setMaxTouchPoints(
+        Platform.isTV ? 0 : _settings.native_touch ? 10 : 0,
+      );
+      webrtcClient.setSupportedSystemUis(supportedSystemUis);
+      webrtcClient.setSystemUiHandler(handleSystemUiEvent);
+      webrtcClient.setMessageHandler(handleStreamingMessage);
+
+      if (_settings.coop) {
+        webrtcClient.setCoop();
+      }
+
+      webrtcClient.setTrackHandler(event => {
+        const track = event.track;
+        if (!remoteStream.current) {
+          remoteStream.current = new MediaStream();
+        }
+        remoteStream.current.addTrack(track, remoteStream.current);
+        if (track?.kind === 'audio') {
+          track?._setVolume?.(audioGainRef.current);
+        }
+      });
+
+      webrtcClient.setSdpHandler((client, offer) => {
+        streamApi
+          .sendChatSdp(offer)
+          .then(sdpResponse => {
+            log.info('sendChatSdp.exchangeResponse:', sdpResponse);
+            const sdpDetails = JSON.parse(sdpResponse.exchangeResponse);
+
+            webrtcClient.setRemoteOffer(sdpDetails.sdp);
+          })
+          .catch(error => {
+            console.log('ChatSDP Exchange error:', error);
+          });
+      });
+
+      webrtcClient.setConnectedHandler(state => {
+        if (activeWebrtcClientRef.current !== webrtcClient) {
+          return;
+        }
+
+        if (state === CONNECTED) {
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          reconnectPendingRef.current = false;
+          reconnectAttemptsRef.current = 0;
+          reconnectExhaustedRef.current = false;
+
+          // Connected
+          if (!isConnected.current) {
+            ToastAndroid.show(t('Connected'), ToastAndroid.SHORT);
+
+            if (_settings.coop) {
+              setTimeout(() => {
+                ToastAndroid.show(t('CoopTips'), ToastAndroid.SHORT);
+              }, 3000);
+            }
+          }
+          setLoadingText(`${t(CONNECTED)}`);
+          setLoading(false);
+          isConnected.current = true;
+          ensureSessionStartTime();
+          if (route.params?.streamType === 'cloud') {
+            const serverLimit =
+              streamApi?.getSessionLimitInSeconds?.() ||
+              xCloudApiRef.current?.getSessionLimitInSeconds?.() ||
+              0;
+            const limit = getCloudSessionTimeLimitSeconds({
+              streamType: route.params?.streamType,
+              accountTier: route.params?.accountTier,
+              titleItem: route.params?.titleItem,
+              serverLimitSeconds: serverLimit,
+            });
+            if (limit > 0) {
+              sessionLimitSecondsRef.current = limit;
+              saveActiveStreamStartTime(
+                route.params?.streamType,
+                route.params?.sessionId,
+                sessionStartTimeRef.current,
+                limit,
+              );
+            }
+          }
+          PipManager?.setAutoPipEnabled?.(
+            !Platform.isTV && !portraitMode && !!_settings.picture_in_picture,
+          );
+
+          // Alway show virtual gamepad
+          if (portraitMode || _settings.show_virtual_gamead) {
+            setShowVirtualGamepad(true);
+          }
+
+          setRemote(remoteStream.current.toURL());
+
+          const sendFrame = () => {
+            webrtcClient &&
+              webrtcClient
+                .getChannelProcessor('input')
+                ?.addProcessedFrame(createStableResolutionProcessedFrame());
+          };
+          setTimeout(() => {
+            sendFrame();
+          }, 2000);
+
+          if (!frameTimer.current) {
+            frameTimer.current = setInterval(() => {
+              sendFrame();
+            }, 10 * 1000);
+          }
+
+          // Start keepalive loop
+          if (!keepaliveInterval.current) {
+            const keepaliveIntervalMs =
+              streamApi?.getKeepaliveIntervalMs?.() ?? 20 * 1000;
+            keepaliveInterval.current = setInterval(() => {
+              streamApi
+                .sendKeepalive()
+                .then(result => {
+                  log.info('StartStream keepalive:', JSON.stringify(result));
+                })
+                .catch(error => {
+                  log.error(
+                    'Failed to send keepalive. Error details:\n',
+                    JSON.stringify(error),
+                  );
+                });
+            }, keepaliveIntervalMs);
+          }
+
+          if (!audioRumbleTimer.current && _settings.enable_audio_rumble) {
+            audioRumbleTimer.current = setInterval(() => {
+              webrtcClient.getAudioVolume().then(vol => {
+                if (vol >= _settings.audio_rumble_threshold) {
+                  GamepadManager.vibrate(
+                    30,
+                    10,
+                    0,
+                    0,
+                    0,
+                    _settings.rumble_intensity || 3,
+                  );
+                }
+              });
+            }, 16);
+          }
+        } else if (state === DISCONNECTED) {
+          scheduleReconnect();
+        } else if (state === CLOSED) {
+          if (isRequestExit.current) {
+            return;
+          }
+          if (isConnected.current && scheduleReconnect()) {
+            // Keep the cloud session alive while the WebRTC transport retries.
+          } else if (connectStateRef.current !== CONNECTED) {
+            return;
+          } else {
+            Alert.alert(t('Warning'), t('Streaming is closed'), [
+              {
+                text: t('Confirm'),
+                style: 'default',
+                onPress: () => {
+                  exit();
+                },
+              },
+            ]);
+          }
+        } else if (state === FAILED) {
+          if (isConnected.current) {
+            scheduleReconnect();
+          } else {
+            Alert.alert(t('Warning'), t('NAT failed'), [
+              {
+                text: t('Confirm'),
+                style: 'default',
+                onPress: () => {
+                  exit();
+                },
+              },
+            ]);
+          }
+        }
+
+        // Toggle microphone
+        setConnectState(state);
+        connectStateRef.current = state;
+      });
+
+      webrtcClient.setRumbleHandler(rumbleData => {
+        if (!_settings.vibration) {
+          return;
+        }
+        // console.log('rumbleData:', rumbleData);
+        if (isUsbMode) {
+          // console.log('isUsbMode:', isUsbMode);
+          if (route.params?.usbController === DUALSENSE) {
+            let weakMagnitude = rumbleData.weakMagnitude * 255;
+            let strongMagnitude = rumbleData.strongMagnitude * 255;
+            if (weakMagnitude > 255) {
+              weakMagnitude = 255;
+            }
+            if (strongMagnitude > 255) {
+              strongMagnitude = 255;
+            }
+            UsbRumbleManager.setDsController(
+              16,
+              124,
+              16,
+              0,
+              0,
+              0,
+              strongMagnitude, // left motor
+              weakMagnitude, // right motor
+              _settings.left_trigger_type || 0,
+              _settings.left_trigger_effects || [],
+              _settings.right_trigger_type || 0,
+              _settings.right_trigger_effects || [],
+            );
+          } else {
+            let weakMagnitude = rumbleData.weakMagnitude * 32767;
+            let strongMagnitude = rumbleData.strongMagnitude * 32767;
+            let leftTrigger = rumbleData.leftTrigger * 32767;
+            let rightTrigger = rumbleData.rightTrigger * 32767;
+            if (weakMagnitude > 32767) {
+              weakMagnitude = 32767;
+            }
+            if (strongMagnitude > 32767) {
+              strongMagnitude = 32767;
+            }
+            if (leftTrigger > 32767) {
+              leftTrigger = 32767;
+            }
+            if (rightTrigger > 32767) {
+              rightTrigger = 32767;
+            }
+            if (weakMagnitude > 0 || strongMagnitude > 0) {
+              if (leftTrigger > 0 || rightTrigger > 0) {
+                UsbRumbleManager.rumbleTriggers(leftTrigger, rightTrigger);
+              } else {
+                UsbRumbleManager.rumbleTriggers(0, 0);
+              }
+            } else {
+              UsbRumbleManager.rumbleTriggers(0, 0);
+            }
+            UsbRumbleManager.rumble(weakMagnitude, strongMagnitude);
+
+            if (rumbleData.duration < 20) {
+              setTimeout(() => {
+                UsbRumbleManager.rumble(0, 0);
+                UsbRumbleManager.rumbleTriggers(0, 0);
+              }, 300);
+            }
+          }
+        } else {
+          // Native android rumble
+          let weakMagnitude = rumbleData.weakMagnitude * 100;
+          let strongMagnitude = rumbleData.strongMagnitude * 100;
+          let leftTrigger = rumbleData.leftTrigger * 100;
+          let rightTrigger = rumbleData.rightTrigger * 100;
+          const duration = Math.max(
+            0,
+            Math.min(10000, Math.floor(rumbleData.duration || 0)),
+          );
+          if (weakMagnitude > 100) {
+            weakMagnitude = 100;
+          }
+          if (strongMagnitude > 100) {
+            strongMagnitude = 100;
+          }
+          if (leftTrigger > 100) {
+            leftTrigger = 100;
+          }
+          if (rightTrigger > 100) {
+            rightTrigger = 100;
+          }
+
+          const shouldStop =
+            weakMagnitude <= 0 &&
+            strongMagnitude <= 0 &&
+            leftTrigger <= 0 &&
+            rightTrigger <= 0;
+          if (shouldStop) {
+            if (!isRumbling.current) {
+              return;
+            }
+            isRumbling.current = false;
+            lastRumbleValues.current = {weak: 0, strong: 0, lt: 0, rt: 0};
+            GamepadManager.vibrate(
+              0,
+              0,
+              0,
+              0,
+              0,
+              _settings.rumble_intensity || 3,
+            );
+            return;
+          }
+
+          const now = Date.now();
+          const prev = lastRumbleValues.current;
+          if (
+            isRumbling.current &&
+            now - lastRumbleTime.current < 35 &&
+            Math.abs(weakMagnitude - prev.weak) < 4 &&
+            Math.abs(strongMagnitude - prev.strong) < 4 &&
+            Math.abs(leftTrigger - prev.lt) < 4 &&
+            Math.abs(rightTrigger - prev.rt) < 4
+          ) {
+            return;
+          }
+
+          isRumbling.current = true;
+          lastRumbleTime.current = now;
+          lastRumbleValues.current = {
+            weak: weakMagnitude,
+            strong: strongMagnitude,
+            lt: leftTrigger,
+            rt: rightTrigger,
+          };
+          GamepadManager.vibrate(
+            duration > 0 ? duration : 30,
+            weakMagnitude,
+            strongMagnitude,
+            leftTrigger,
+            rightTrigger,
+            _settings.rumble_intensity || 3,
+          );
+        }
+      });
+
+      const exit = async () => {
+        isRequestExit.current = true;
+        setLoading(false);
+        webrtcClient && webrtcClient.close();
+        await waitStopStream(streamApi);
+        finishStreamExit();
+      };
+
+      setLoading(true);
+      setLoadingText(`${t('Connecting...')}`);
+
+      const setCodec = sdp => {
+        const codec = _settings.codec;
+        const codecArr = codec.split('-');
+        const mimeType = codecArr[0]; // H264
+        const profiles = codecArr[1]; // ['4d'] 4d = high, 42e = mid, 420 = low
+
+        if (!mimeType || !profiles) {
+          return sdp;
+        }
+        const capabilities = RTCRtpReceiver.getCapabilities('video');
+
+        if (capabilities === null) {
+          return sdp;
+        }
+
+        const codecs: any = capabilities.codecs;
+        const prefCodecs: any = [];
+
+        for (let i = 0; i < codecs.length; i++) {
+          if (codecs[i].mimeType === mimeType) {
+            if (profiles.length > 0) {
+              for (let j = 0; j < profiles.length; j++) {
+                if (
+                  codecs[i].sdpFmtpLine?.indexOf(
+                    'profile-level-id=' + profiles[j],
+                  ) !== -1
+                ) {
+                  console.log(
+                    'Adding codec as preference:',
+                    codecs[i],
+                    profiles[j],
+                  );
+                  prefCodecs.push(codecs[i]);
+                }
+              }
+            } else {
+              console.log('Adding codec as preference:', codecs[i]);
+              prefCodecs.push(codecs[i]);
+            }
+          }
+        }
+
+        if (prefCodecs.length === 0) {
+          console.log(
+            'setCodec() No video codec matches with mimetype:',
+            mimeType,
+          );
+          return sdp;
+        }
+
+        if (mimeType.indexOf('H264') > -1) {
+          // High=4d Medium=42e Low=420
+          const h264Pattern = /a=fmtp:(\d+).*profile-level-id=([0-9a-f]{6})/g;
+          const profilePrefix = profiles[0];
+          const preferredCodecIds: any = [];
+          // Find all H.264 codec profile IDs
+          const matches = sdp.matchAll(h264Pattern) || [];
+          for (const match of matches) {
+            const id = match[1];
+            const profileId = match[2];
+
+            if (profileId.startsWith(profilePrefix)) {
+              preferredCodecIds.push(id);
+            }
+          }
+          // No preferred IDs found
+          if (!preferredCodecIds.length) {
+            return sdp;
+          }
+
+          const lines = sdp.split('\r\n');
+          for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+            const line = lines[lineIndex];
+            if (!line.startsWith('m=video')) {
+              continue;
+            }
+
+            // https://datatracker.ietf.org/doc/html/rfc4566#section-5.14
+            // m=<media> <port> <proto> <fmt>
+            // m=video 9 UDP/TLS/RTP/SAVPF 127 39 102 104 106 108
+            const tmp = line.trim().split(' ');
+
+            // Get array of <fmt>
+            // ['127', '39', '102', '104', '106', '108']
+            let ids = tmp.slice(3);
+
+            // Remove preferred IDs in the original array
+            ids = ids.filter(item => !preferredCodecIds.includes(item));
+
+            // Put preferred IDs at the beginning
+            ids = preferredCodecIds.concat(ids);
+
+            // Update line's content
+            lines[lineIndex] = tmp.slice(0, 3).concat(ids).join(' ');
+
+            break;
+          }
+
+          return lines.join('\r\n');
+        }
+      };
+
+      const handleQueueProgress = (info: {
+        state: string;
+        estimatedWaitInSeconds?: number;
+        position?: number;
+      }) => {
+        if (info.state === 'WaitingForResources') {
+          if (
+            typeof info.estimatedWaitInSeconds === 'number' &&
+            info.estimatedWaitInSeconds > 0
+          ) {
+            if (info.estimatedWaitInSeconds > 60) {
+              const minutes = Math.ceil(info.estimatedWaitInSeconds / 60);
+              let msg = t('In queue: ~{{min}} min wait', {min: minutes});
+              if (info.position) {
+                msg +=
+                  '\n' + t('Position in queue: {{pos}}', {pos: info.position});
+              }
+              setLoadingText(msg);
+            } else {
+              let msg = t('In queue: less than a minute...');
+              if (info.position) {
+                msg +=
+                  '\n' + t('Position in queue: {{pos}}', {pos: info.position});
+              }
+              setLoadingText(msg);
+            }
+          } else {
+            let msg = t('In queue, waiting for available server...');
+            if (info.position) {
+              msg +=
+                '\n' + t('Position in queue: {{pos}}', {pos: info.position});
+            }
+            setLoadingText(msg);
+          }
+        } else if (info.state === 'Provisioning') {
+          setLoadingText(t('Allocating cloud server...'));
+        } else if (info.state === 'ReadyToConnect') {
+          setLoadingText(t('Ready to connect, authenticating...'));
+        }
+      };
+
+      streamApi
+        .startSession(
+          route.params?.sessionId,
+          _settings.resolution,
+          handleQueueProgress,
+        )
+        .then(() => {
+          setLoadingText(
+            `${t('Configuration obtained successfully, initiating offer...')}`,
+          );
+          webrtcClient.createOffer().then(offer => {
+            // Set codec
+            if (_settings.codec !== '') {
+              offer.sdp = setCodec(offer.sdp);
+            }
+
+            streamApi
+              .sendSDPOffer(offer)
+              .then(sdpResponse => {
+                setLoadingText(
+                  `${t('Remote offer retrieved successfully...')}`,
+                );
+                log.info('sdpResponse.exchangeResponse:', sdpResponse);
+                const sdpDetails = JSON.parse(sdpResponse.exchangeResponse);
+                webrtcClient.setRemoteOffer(sdpDetails.sdp).then(() => {
+                  setLoadingText(`${t('Ready to send ICE...')}`);
+                  const iceCandidates = webrtcClient.getIceCandidates();
+                  streamApi
+                    .sendICECandidates(iceCandidates)
+                    .then(iceDetails => {
+                      log.info(
+                        'Client - ICE iceDetails:',
+                        JSON.stringify(iceDetails),
+                      );
+                      webrtcClient.setIceCandidates(iceDetails);
+                      setLoadingText(`${t('Exchange ICE successfully...')}`);
+                    })
+                    .catch(e => {
+                      if (scheduleReconnect()) {
+                        return;
+                      }
+                      Alert.alert(
+                        t('Warning'),
+                        '[sendICECandidates] fail:' + e,
+                        [
+                          {
+                            text: t('Confirm'),
+                            style: 'default',
+                            onPress: () => {
+                              exit();
+                            },
+                          },
+                        ],
+                      );
+                    });
+                });
+              })
+              .catch(e => {
+                if (scheduleReconnect()) {
+                  return;
+                }
+                Alert.alert(t('Warning'), '[sendSDPOffer] fail:' + e, [
+                  {
+                    text: t('Confirm'),
+                    style: 'default',
+                    onPress: () => {
+                      exit();
+                    },
+                  },
+                ]);
+              });
+          });
+        })
+        .catch(e => {
+          if (scheduleReconnect()) {
+            return;
+          }
+          if (e !== '') {
+            let msg = '';
+            if (typeof e === 'string') {
+              if (e.includes('WaitingForServerToRegister')) {
+                if (e.includes('disabled streaming')) {
+                  msg = '[StartSession] Fail:' + t('DisabledStreamingErr') + e;
+                } else {
+                  msg =
+                    '[StartSession] Fail:' +
+                    t('WaitingForServerToRegister') +
+                    e;
+                }
+              } else if (e.includes('xboxstreaminghelper.cpp')) {
+                msg = '[StartSession] Fail:' + t('XboxstreaminghelperErr') + e;
+              } else {
+                msg = '[StartSession] Fail:' + e;
+              }
+            } else {
+              if (e.message?.indexOf('400') > -1) {
+                const error =
+                  route.params?.streamType === 'cloud'
+                    ? t('noAllow')
+                    : t('homeNoAllow');
+                msg =
+                  `[StartSession](${
+                    route.params?.streamType === 'cloud' ? 'Cloud' : 'Home'
+                  }) - (${route.params?.sessionId}) Fail:` + error;
+              } else {
+                msg =
+                  `[StartSession](${
+                    route.params?.streamType === 'cloud' ? 'Cloud' : 'Home'
+                  }) - (${route.params?.sessionId}) Fail:` + e;
+              }
+            }
+            Alert.alert(t('Warning'), msg, [
+              {
+                text: t('Confirm'),
+                style: 'default',
+                onPress: () => {
+                  markOrientationForRestore();
+                  restorePreviousOrientation();
+                  const dest =
+                    route.params?.streamType === 'cloud' ? 'Cloud' : 'Home';
+                  navigation.navigate(dest);
+                },
+              },
+            ]);
+          }
+        });
+    }
+
+    return () => {
+      beforeRemoveListener();
+      FullScreenManager.immersiveModeOff();
+      stopVibrate();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (activeWebrtcClientRef.current === webrtcClient) {
+        activeWebrtcClientRef.current = null;
+      }
+      webrtcClient && webrtcClient.close();
+      usbGpEventListener.current && usbGpEventListener.current.remove();
+      gpDownEventListener.current && gpDownEventListener.current.remove();
+      gpUpEventListener.current && gpUpEventListener.current.remove();
+      dpDownEventListener.current && dpDownEventListener.current.remove();
+      dpUpEventListener.current && dpUpEventListener.current.remove();
+      stickEventListener.current && stickEventListener.current.remove();
+      triggerEventListener.current && triggerEventListener.current.remove();
+      sensorEventListener.current && sensorEventListener.current.remove();
+      appStateSubscription.current && appStateSubscription.current.remove();
+      pipEventListener.current && pipEventListener.current.remove();
+      audioGainEventListener.current && audioGainEventListener.current.remove();
+      PipManager?.setAutoPipEnabled?.(false);
+      if (timer.current) {
+        clearInterval(timer.current);
+        timer.current = null;
+      }
+      if (menuLongPressTimer.current) {
+        clearTimeout(menuLongPressTimer.current);
+        menuLongPressTimer.current = null;
+      }
+      if (frameTimer.current) {
+        clearInterval(frameTimer.current);
+        frameTimer.current = null;
+      }
+      if (keepaliveInterval.current) {
+        clearInterval(keepaliveInterval.current);
+        keepaliveInterval.current = null;
+      }
+      if (performanceInterval.current) {
+        clearInterval(performanceInterval.current);
+        performanceInterval.current = null;
+      }
+      if (audioRumbleTimer.current) {
+        clearInterval(audioRumbleTimer.current);
+        audioRumbleTimer.current = null;
+      }
+      macroSequenceTimersRef.current.forEach(timeoutId =>
+        clearTimeout(timeoutId),
+      );
+      macroSequenceTimersRef.current = [];
+      manualLeftThumbPressedRef.current = false;
+      autoSprintLeftThumbPressedRef.current = false;
+      syncLeftThumbButton(gpState);
+      GamepadManager.setCurrentScreen('');
+      resumeGamepadNavigation();
+      SdlGamepadManager?.stopController?.();
+      SensorModule.stopSensor();
+      GamepadSensorModule.stopSensor();
+      closeSystemKeyboardModal();
+    };
+  }, [
+    t,
+    route.params?.sessionId,
+    route.params?.streamType,
+    route.params?.isUsbMode,
+    route.params?.usbController,
+    webrtcClient,
+    streamApi,
+    streamingTokens,
+    navigation,
+    authentication,
+    handleSystemUiEvent,
+    handleStreamingMessage,
+    applyRemoteAudioGain,
+    handleAudioGainChange,
+    closeSystemKeyboardModal,
+    finishStreamExit,
+    markOrientationForRestore,
+    restorePreviousOrientation,
+    waitStopStream,
+    supportedSystemUis,
+    scheduleReconnect,
+    portraitMode,
+    setManualLeftThumbPressed,
+    syncAutoSprint,
+    syncLeftThumbButton,
+  ]);
+
+  const isSessionTrackerStartedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (connectState === CONNECTED && !isSessionTrackerStartedRef.current) {
+      isSessionTrackerStartedRef.current = true;
+      const activeSettings =
+        settings && Object.keys(settings).length > 0 ? settings : getSettings();
+      const gameTitle =
+        route.params?.gameTitle ||
+        route.params?.titleItem?.ProductTitle ||
+        route.params?.titleItem?.titleName ||
+        route.params?.titleItem?.Title ||
+        (route.params?.streamType === 'cloud'
+          ? 'Xbox Cloud Gaming'
+          : 'Xbox Console');
+
+      const titleItem = route.params?.titleItem;
+      let rawPoster =
+        titleItem?.Image_Tile?.URL ||
+        titleItem?.details?.heroUrl ||
+        titleItem?.hero ||
+        titleItem?.superHeroArt ||
+        titleItem?.Image_Poster?.URL ||
+        titleItem?.details?.posterUrl ||
+        titleItem?.poster ||
+        titleItem?.box_art;
+
+      let gamePoster = '';
+      if (rawPoster) {
+        gamePoster = rawPoster.startsWith('http')
+          ? rawPoster
+          : rawPoster.startsWith('//')
+          ? `https:${rawPoster}`
+          : `https://${rawPoster}`;
+      }
+
+      sessionStatsTracker.startSession({
+        gameTitle,
+        gamePoster,
+        sessionId: route.params?.sessionId,
+        streamType: route.params?.streamType,
+        sessionStartTime: sessionStartTimeRef.current,
+        codec: activeSettings?.codec,
+        resolution:
+          activeSettings?.resolution === 1081
+            ? '1440p'
+            : activeSettings?.resolution
+            ? `${activeSettings.resolution}p`
+            : undefined,
+      });
+    } else if (connectState !== CONNECTED) {
+      isSessionTrackerStartedRef.current = false;
+    }
+  }, [
+    connectState,
+    route.params?.gameTitle,
+    route.params?.titleItem,
+    route.params?.streamType,
+    route.params?.sessionId,
+    settings,
+    settings?.codec,
+    settings?.resolution,
+  ]);
+
+  React.useEffect(() => {
+    const isReportEnabled = String(settings.show_session_report) === 'true';
+    const smartFrameGenerationEnabled =
+      !!settings.smart_frame_generation && !!showPerformance;
+
+    if (
+      connectState !== CONNECTED ||
+      !webrtcClient ||
+      typeof webrtcClient.getStreamState !== 'function' ||
+      (!showPerformance && !isReportEnabled)
+    ) {
+      if (performanceInterval.current) {
+        clearInterval(performanceInterval.current);
+        performanceInterval.current = null;
+      }
+      frameGenStatsSampleRef.current = null;
+      return;
+    }
+
+    const roundFps = (value: number) =>
+      Number.isFinite(value) && value >= 0 ? Math.round(value * 10) / 10 : 0;
+
+    const mergeFrameGenStats = async (streamPerformance: any) => {
+      if (
+        !showPerformance ||
+        !smartFrameGenerationEnabled ||
+        !FrameGenStatsModule ||
+        typeof FrameGenStatsModule.getStats !== 'function'
+      ) {
+        frameGenStatsSampleRef.current = null;
+        return streamPerformance;
+      }
+
+      try {
+        const stats = await FrameGenStatsModule.getStats();
+        const currentSample = {
+          timestampMs: Date.now(),
+          generatedFrameCount: Number(stats?.generatedFrameCount) || 0,
+          postedFrameCount: Number(stats?.postedFrameCount) || 0,
+          uniqueCaptureCount: Number(stats?.uniqueCaptureCount) || 0,
+        };
+        const previousSample = frameGenStatsSampleRef.current;
+        const streamFps = Number(streamPerformance?.fps) || 0;
+        let rawFps = roundFps(streamFps);
+        let generatedFps = 0;
+        let totalFps = rawFps;
+
+        if (
+          previousSample &&
+          currentSample.timestampMs > previousSample.timestampMs &&
+          currentSample.generatedFrameCount >=
+            previousSample.generatedFrameCount &&
+          currentSample.postedFrameCount >= previousSample.postedFrameCount &&
+          currentSample.uniqueCaptureCount >= previousSample.uniqueCaptureCount
+        ) {
+          const elapsedSeconds =
+            (currentSample.timestampMs - previousSample.timestampMs) / 1000;
+          const rawDelta =
+            currentSample.uniqueCaptureCount -
+            previousSample.uniqueCaptureCount;
+          const generatedDelta =
+            currentSample.generatedFrameCount -
+            previousSample.generatedFrameCount;
+          const totalDelta =
+            currentSample.postedFrameCount - previousSample.postedFrameCount;
+
+          if (elapsedSeconds > 0) {
+            rawFps =
+              rawDelta > 0 ? roundFps(rawDelta / elapsedSeconds) : rawFps;
+            generatedFps = roundFps(generatedDelta / elapsedSeconds);
+            totalFps =
+              totalDelta > 0
+                ? roundFps(totalDelta / elapsedSeconds)
+                : roundFps(rawFps + generatedFps);
+          }
+        }
+
+        frameGenStatsSampleRef.current = currentSample;
+        return {
+          ...streamPerformance,
+          framegen: {rawFps, generatedFps, totalFps},
+        };
+      } catch (e) {
+        frameGenStatsSampleRef.current = null;
+        return streamPerformance;
+      }
+    };
+
+    const updatePerformance = () => {
+      const now = Date.now();
+      if (!sessionStartTimeRef.current && isConnected.current) {
+        sessionStartTimeRef.current = now;
+      }
+
+      let playtimeFormatted = '';
+      if (sessionStartTimeRef.current > 0) {
+        const elapsed = Math.max(
+          0,
+          Math.floor((now - sessionStartTimeRef.current) / 1000),
+        );
+        const playtimeStr = formatDuration(elapsed);
+        const limit = sessionLimitSecondsRef.current;
+        playtimeFormatted =
+          limit > 0 ? `${playtimeStr} / ${formatDuration(limit)}` : playtimeStr;
+
+        if (limit > 0 && elapsed >= 30) {
+          const remaining = limit - elapsed;
+          if (
+            remaining <= 15 * 60 &&
+            remaining > 0 &&
+            !hasReminded15MinRef.current
+          ) {
+            hasReminded15MinRef.current = true;
+            triggerPlaytimeReminder(15);
+          } else if (
+            remaining <= 5 * 60 &&
+            remaining > 0 &&
+            !hasReminded5MinRef.current
+          ) {
+            hasReminded5MinRef.current = true;
+            triggerPlaytimeReminder(5);
+          }
+        }
+      }
+
+      webrtcClient
+        .getStreamState()
+        .then(async res => {
+          if (res) {
+            res.playtimeFormatted = playtimeFormatted;
+          }
+          if (showPerformance) {
+            setPerformance(await mergeFrameGenStats(res));
+          }
+          if (res && isReportEnabled) {
+            sessionStatsTracker.recordSample({
+              rtt: res.rtt,
+              bitrate: res.br,
+              packetLoss: res.pl,
+              jitter: res.jit,
+              fps: res.fps,
+              decode: res.decode,
+              resolution: res.resolution,
+              bytesReceived: res.bytesReceived,
+              bytesSent: res.bytesSent,
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    updatePerformance();
+    performanceInterval.current = setInterval(updatePerformance, 1000);
+
+    return () => {
+      if (performanceInterval.current) {
+        clearInterval(performanceInterval.current);
+        performanceInterval.current = null;
+      }
+      if (playtimeReminderTimerRef.current) {
+        clearTimeout(playtimeReminderTimerRef.current);
+      }
+      frameGenStatsSampleRef.current = null;
+    };
+  }, [
+    connectState,
+    showPerformance,
+    settings.smart_frame_generation,
+    settings.show_session_report,
+    webrtcClient,
+  ]);
+
+  const handlePowerOff = React.useCallback(async () => {
+    const webApi = new WebApi(webToken);
+    const powerOffRes = await webApi.powerOff(route.params?.sessionId);
+    console.log('powerOff:', powerOffRes);
+  }, [route.params?.sessionId, webToken]);
+
+  const handleSendMessage = React.useCallback(
+    async (rawMessage: string) => {
+      const webApi = new WebApi(webToken);
+      setMessageSending(true);
+      let text = rawMessage.trim();
+      if (text.length > 100) {
+        text = text.substring(0, 100);
+      }
+      try {
+        await webApi.sendText(route.params?.sessionId, text);
+        ToastAndroid.show(t('Sended'), ToastAndroid.SHORT);
+      } catch (e) {}
+      setMessageSending(false);
+    },
+    [route.params?.sessionId, t, webToken],
+  );
+
+  const openSendTextDialog = React.useCallback(async () => {
+    if (messageSending) {
+      return;
+    }
+
+    const result = await showNativeInputDialog({
+      title: t('Send text'),
+      hint: t('Text'),
+      text: '',
+      maxLength: 100,
+      confirmText: t('Send'),
+      cancelText: t('Cancel'),
+    });
+
+    if (result?.action === 'confirm') {
+      await handleSendMessage(result.text || '');
+    }
+  }, [handleSendMessage, messageSending, showNativeInputDialog, t]);
+
+  const handleExit = React.useCallback(
+    async (off = false) => {
+      setLoading(true);
+      setLoadingText(t('Disconnecting...'));
+      if (isExiting) {
+        return;
+      }
+      isRequestExit.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectPendingRef.current = false;
+      setIsExiting(true);
+      webrtcClient && webrtcClient.close();
+      clearActiveStreamStartTime(route.params?.sessionId);
+      await waitStopStream(streamApi);
+      if (off) {
+        handlePowerOff();
+      }
+      finishStreamExit();
+    },
+    [
+      finishStreamExit,
+      handlePowerOff,
+      isExiting,
+      streamApi,
+      t,
+      waitStopStream,
+      webrtcClient,
+    ],
+  );
+  handleExitRef.current = handleExit;
+
+  const handleCloseModal = React.useCallback(() => {
+    setShowModal(false);
+    GamepadManager.setCurrentScreen('stream');
+    suspendGamepadNavigation();
+
+    if (!isConnected.current) {
+      setLoading(true);
+    }
+  }, []);
+
+  const clearMacroTimers = React.useCallback(() => {
+    macroSequenceTimersRef.current.forEach(timeoutId =>
+      clearTimeout(timeoutId),
+    );
+    macroSequenceTimersRef.current = [];
+    isMacroLoopRunningRef.current = false;
+    Array.from(activeMacroButtonsRef.current).forEach(button => {
+      if (button === 'LeftThumb') {
+        setManualLeftThumbPressed(false);
+      } else {
+        gpState[button] = 0;
+      }
+    });
+    activeMacroButtonsRef.current.clear();
+    Array.from(activeMacroSticksRef.current).forEach(stick => {
+      if (stick === 'right') {
+        gpState.RightThumbXAxis = 0;
+        gpState.RightThumbYAxis = 0;
+      } else {
+        gpState.LeftThumbXAxis = 0;
+        gpState.LeftThumbYAxis = 0;
+        syncAutoSprint(gpState, !!settings.auto_sprint);
+      }
+    });
+    activeMacroSticksRef.current.clear();
+  }, [setManualLeftThumbPressed, settings.auto_sprint, syncAutoSprint]);
+
+  const runMacroSteps = (rawSteps: any) => {
+    const allowedButtons = new Set<string>(VIRTUAL_MACRO_ALLOWED_BUTTONS);
+    const steps = normalizeMacroSteps(
+      rawSteps,
+      DEFAULT_VIRTUAL_MACRO_SHORT_STEPS,
+    );
+    let accumulatedDelay = 0;
+
+    const schedule = (delay: number, fn: () => void) => {
+      const timeoutId = setTimeout(() => {
+        fn();
+        macroSequenceTimersRef.current = macroSequenceTimersRef.current.filter(
+          item => item !== timeoutId,
+        );
+      }, delay);
+      macroSequenceTimersRef.current.push(timeoutId);
+    };
+
+    steps.forEach((step: any) => {
+      const duration = Math.max(30, Number(step.durationMs) || 80);
+      const waitAfter = Math.max(0, Number(step.waitAfterMs) || 0);
+
+      if (step.type === 'stick') {
+        const stick = step.stick === 'right' ? 'right' : 'left';
+        const x = Math.max(-1, Math.min(1, Number(step.x) || 0));
+        const y = Math.max(-1, Math.min(1, Number(step.y) || 0));
+
+        schedule(accumulatedDelay, () => {
+          activeMacroSticksRef.current.add(stick);
+          if (stick === 'right') {
+            gpState.RightThumbXAxis = x;
+            gpState.RightThumbYAxis = y;
+          } else {
+            gpState.LeftThumbXAxis = x;
+            gpState.LeftThumbYAxis = y;
+            syncAutoSprint(gpState, !!settings.auto_sprint);
+          }
+        });
+        schedule(accumulatedDelay + duration, () => {
+          activeMacroSticksRef.current.delete(stick);
+          if (stick === 'right') {
+            gpState.RightThumbXAxis = 0;
+            gpState.RightThumbYAxis = 0;
+          } else {
+            gpState.LeftThumbXAxis = 0;
+            gpState.LeftThumbYAxis = 0;
+            syncAutoSprint(gpState, !!settings.auto_sprint);
+          }
+        });
+        accumulatedDelay += duration + waitAfter;
+        return;
+      }
+
+      const stepButtons = Array.isArray(step?.buttons)
+        ? step.buttons.filter((button: string) => allowedButtons.has(button))
+        : [];
+
+      if (!stepButtons.length) {
+        return;
+      }
+
+      schedule(accumulatedDelay, () => {
+        stepButtons.forEach((button: string) => {
+          activeMacroButtonsRef.current.add(button);
+          if (button === 'LeftThumb') {
+            setManualLeftThumbPressed(true);
+          } else {
+            gpState[button] = 1;
+          }
+        });
+      });
+      schedule(accumulatedDelay + duration, () => {
+        stepButtons.forEach((button: string) => {
+          activeMacroButtonsRef.current.delete(button);
+          if (button === 'LeftThumb') {
+            setManualLeftThumbPressed(false);
+          } else {
+            gpState[button] = 0;
+          }
+        });
+      });
+      accumulatedDelay += duration + waitAfter;
+    });
+
+    return accumulatedDelay;
+  };
+
+  const handleMacroPressIn = () => {
+    const shortSteps = Array.isArray(settings.virtual_macro_short_press_steps)
+      ? settings.virtual_macro_short_press_steps
+      : [];
+    const longSteps = Array.isArray(settings.virtual_macro_long_press_steps)
+      ? settings.virtual_macro_long_press_steps
+      : [];
+    const rawSteps = shortSteps.length ? shortSteps : longSteps;
+    if (settings.virtual_macro_loop_enabled) {
+      if (isMacroLoopRunningRef.current) {
+        clearMacroTimers();
+        return;
+      }
+
+      clearMacroTimers();
+      isMacroLoopRunningRef.current = true;
+      const interval = normalizeMacroLoopIntervalMs(
+        settings.virtual_macro_loop_interval_ms,
+      );
+      const runLoop = () => {
+        if (!isMacroLoopRunningRef.current) {
+          return;
+        }
+        const totalDuration = runMacroSteps(rawSteps);
+        if (!totalDuration) {
+          clearMacroTimers();
+          return;
+        }
+        const delay = Math.max(30, totalDuration + interval);
+        const timeoutId = setTimeout(() => {
+          macroSequenceTimersRef.current =
+            macroSequenceTimersRef.current.filter(item => item !== timeoutId);
+          runLoop();
+        }, delay);
+        macroSequenceTimersRef.current.push(timeoutId);
+      };
+      runLoop();
+      return;
+    }
+
+    clearMacroTimers();
+    runMacroSteps(rawSteps);
+
+    if (settings.vibration) {
+      Vibration.vibrate(20);
+    }
+  };
+
+  const handleMacroPressOut = () => {};
+
+  // Virtual gamepad press start
+  const handleButtonPressIn = name => {
+    const names = Array.isArray(name) ? name : [name];
+    if (names.length === 1 && names[0] === VIRTUAL_MACRO_BUTTON_NAME) {
+      handleMacroPressIn();
+      return;
+    }
+
+    const hold_buttons = settings.hold_buttons || [];
+    let shouldVibrate = false;
+    names.forEach(item => {
+      if (item === 'LeftThumb') {
+        setManualLeftThumbPressed(
+          hold_buttons.includes(item)
+            ? !manualLeftThumbPressedRef.current
+            : true,
+        );
+        shouldVibrate = true;
+        return;
+      }
+
+      if (hold_buttons.includes(item)) {
+        gpState[item] = gpState[item] === 1 ? 0 : 1;
+        return;
+      }
+      gpState[item] = 1;
+      shouldVibrate = true;
+    });
+
+    if (shouldVibrate && settings.vibration) {
+      Vibration.vibrate(30);
+    }
+  };
+
+  // Virtual gamepad press end
+  const handleButtonPressOut = name => {
+    const names = Array.isArray(name) ? name : [name];
+    if (names.length === 1 && names[0] === VIRTUAL_MACRO_BUTTON_NAME) {
+      handleMacroPressOut();
+      return;
+    }
+
+    const hold_buttons = settings.hold_buttons || [];
+    names.forEach(item => {
+      if (item === 'LeftThumb') {
+        if (hold_buttons.includes(item)) {
+          return;
+        }
+        setTimeout(() => {
+          setManualLeftThumbPressed(false);
+        }, 50);
+        return;
+      }
+
+      if (hold_buttons.includes(item)) {
+        return;
+      }
+      setTimeout(() => {
+        gpState[item] = 0;
+      }, 50);
+    });
+  };
+
+  // Virtual gamepad stick move
+  const handleStickMove = (id, data) => {
+    // console.log('handleStickMove:', id, data);
+    let leveledX: any = data.x;
+    let leveledY: any = data.y;
+
+    if (typeof leveledX === 'number') {
+      leveledX = leveledX.toFixed(2);
+    }
+    if (typeof leveledY === 'number') {
+      leveledY = leveledY.toFixed(2);
+    }
+
+    if (id === 'right') {
+      const vx = Number(leveledX);
+      const vy = Number(leveledY);
+      physicalRightStick.current = {x: vx, y: vy};
+      if (Math.abs(vx) > 0.05 || Math.abs(vy) > 0.05) {
+        isRightstickMoving.current = true;
+      } else {
+        isRightstickMoving.current = false;
+      }
+      gpState.RightThumbXAxis = Math.max(
+        -1,
+        Math.min(1, Number((vx + gyroStick.current.x).toFixed(3))),
+      );
+      gpState.RightThumbYAxis = Math.max(
+        -1,
+        Math.min(1, Number((vy + gyroStick.current.y).toFixed(3))),
+      );
+    } else {
+      gpState.LeftThumbXAxis = Number(leveledX);
+      gpState.LeftThumbYAxis = Number(leveledY);
+      syncAutoSprint(gpState, !!settings.auto_sprint);
+    }
+  };
+
+  const requestExit = React.useCallback(
+    (off = false) => {
+      clearMacroTimers();
+      isRequestExit.current = true;
+      setShowPerformance(false);
+      setShowVirtualGamepad(false);
+      webrtcClient && webrtcClient.close();
+      setShowModal(false);
+      if (settings.sensor) {
+        SensorModule.stopSensor();
+        GamepadSensorModule.stopSensor();
+      }
+      handleExit(off);
+    },
+    [clearMacroTimers, handleExit, settings.sensor, webrtcClient],
+  );
+
+  const handleToggleMic = React.useCallback(async () => {
+    if (!webrtcClient) {
+      return;
+    }
+
+    const chatChannel = webrtcClient.getChannelProcessor('chat');
+
+    if (chatChannel.isPaused === true) {
+      const started = await chatChannel.startMic();
+      setOpenMicro(Boolean(started));
+
+      if (!started) {
+        Alert.alert(
+          t('Warning'),
+          'Failed to open microphone. Please check microphone permission.',
+        );
+      }
+    } else {
+      chatChannel.stopMic();
+      setOpenMicro(false);
+    }
+
+    handleCloseModal();
+  }, [handleCloseModal, t, webrtcClient]);
+
+  const getActiveProfileName = React.useCallback(() => {
+    return settings.custom_virtual_gamepad || LIVE_GAMEPAD_PROFILE;
+  }, [settings.custom_virtual_gamepad]);
+
+  const handleOpenGamepadEditor = React.useCallback(() => {
+    setEditorProfile(getActiveProfileName());
+    setShowGamepadEditor(true);
+  }, [getActiveProfileName]);
+
+  const handleSaveGamepadLayout = (layout: ButtonConfig[]) => {
+    const profileName = editorProfile || getActiveProfileName();
+    saveGamepadLayout(profileName, layout);
+    if (!settings.custom_virtual_gamepad) {
+      settings.custom_virtual_gamepad = profileName;
+    }
+    saveSettings(settings);
+    setSettings({...settings});
+    setGamepadLayoutVersion(prev => prev + 1);
+    setShowVirtualGamepad(true);
+    setShowGamepadEditor(false);
+  };
+
+  const savePortraitGamepadLayout = React.useCallback(
+    (layout: PortraitGamepadControl[]) => {
+      const nextSettings = {
+        ...getSettings(),
+        native_portrait_gamepad_layout: layout,
+      };
+      saveSettings(nextSettings);
+      setSettings(nextSettings);
+    },
+    [],
+  );
+
+  const resetPortraitGamepadLayout = React.useCallback(() => {
+    const nextSettings = {
+      ...getSettings(),
+      native_portrait_gamepad_layout: [],
+    };
+    saveSettings(nextSettings);
+    setSettings(nextSettings);
+  }, []);
+
+  const showNativeOptionsDialog = React.useCallback(
+    async (
+      items: Array<{
+        id: string;
+        title: string;
+        active?: boolean;
+        category?: string;
+        icon?: string;
+      }>,
+      options: any = {},
+    ) => {
+      if (!NativeInputDialog?.showOptions) {
+        return null;
+      }
+
+      try {
+        return await NativeInputDialog.showOptions({
+          items,
+          ...options,
+        });
+      } catch (error) {
+        return null;
+      }
+    },
+    [],
+  );
+
+  const openOptionsModal = React.useCallback(async () => {
+    if (optionsDialogOpenRef.current) {
+      return;
+    }
+    if (portraitMode || isInPictureInPicture) {
+      handleCloseModal();
+      return;
+    }
+
+    optionsDialogOpenRef.current = true;
+    GamepadManager.setCurrentScreen('');
+    resumeGamepadNavigation();
+
+    const activeRecording = await gameRecorder.isRecording().catch(() => false);
+    setIsRecording(activeRecording);
+
+    const items: Array<{
+      id: string;
+      title: string;
+      active?: boolean;
+      category?: string;
+    }> = [];
+    if (connectState === CONNECTED) {
+      ensureSessionStartTime();
+      if (
+        sessionLimitSecondsRef.current <= 0 &&
+        route.params?.streamType === 'cloud'
+      ) {
+        const serverLimit =
+          streamApi?.getSessionLimitInSeconds?.() ||
+          xCloudApiRef.current?.getSessionLimitInSeconds?.() ||
+          0;
+        const limit = getCloudSessionTimeLimitSeconds({
+          streamType: route.params?.streamType,
+          accountTier: route.params?.accountTier,
+          titleItem: route.params?.titleItem,
+          serverLimitSeconds: serverLimit,
+        });
+        if (limit > 0) {
+          sessionLimitSecondsRef.current = limit;
+          saveActiveStreamStartTime(
+            route.params?.streamType,
+            route.params?.sessionId,
+            sessionStartTimeRef.current,
+            limit,
+          );
+        }
+      }
+      if (sessionStartTimeRef.current > 0) {
+        const elapsed = Math.floor(
+          (Date.now() - sessionStartTimeRef.current) / 1000,
+        );
+        const durationStr = formatDuration(elapsed);
+        let title = `${t('Session Playtime')}: ${durationStr}`;
+        if (sessionLimitSecondsRef.current > 0) {
+          const remaining = Math.max(
+            0,
+            sessionLimitSecondsRef.current - elapsed,
+          );
+          title += ` (${t('{{min}} min left', {
+            min: Math.max(1, Math.ceil(remaining / 60)),
+          })})`;
+        }
+        items.push({
+          id: 'playtimeInfo',
+          title: `⏱️ ${title}`,
+        });
+      }
+      items.push({
+        id: 'togglePerformance',
+        title: t('Toggle Performance'),
+        active: showPerformance,
+      });
+      items.push({
+        id: 'toggleVirtualGamepad',
+        title: t('Toggle Virtual Gamepad'),
+        active: showVirtualGamepad,
+      });
+      items.push({
+        id: 'toggleRecording',
+        title: activeRecording ? t('Stop Recording') : t('Start Recording'),
+        active: activeRecording,
+      });
+      items.push({
+        id: 'takeScreenshot',
+        title: t('Take Screenshot'),
+      });
+      if (showVirtualGamepad) {
+        items.push({
+          id: 'editVirtualGamepad',
+          title: t('Edit Virtual Gamepad'),
+        });
+      }
+      if (settings.enable_microphone) {
+        items.push({
+          id: 'toggleMicrophone',
+          title: openMicro ? t('Close Microphone') : t('Open Microphone'),
+          active: openMicro,
+        });
+      }
+      items.push({
+        id: 'pressNexus',
+        title: t('Press Nexus'),
+      });
+      if (route.params?.streamType !== 'cloud') {
+        items.push({
+          id: 'longPressNexus',
+          title: t('Long press Nexus'),
+        });
+        items.push({
+          id: 'sendText',
+          title: t('Send text'),
+        });
+      }
+      if (settings.power_on && route.params?.streamType !== 'cloud') {
+        items.push({
+          id: 'disconnectPowerOff',
+          title: t('Disconnect and power off'),
+        });
+      }
+      if (route.params?.streamType === 'cloud') {
+        items.push({
+          id: 'saveSessionAndDisconnect',
+          title: t('Save session & disconnect'),
+        });
+      }
+    }
+    items.push({
+      id: 'disconnect',
+      title: t('Disconnect'),
+    });
+
+    const result = await showNativeOptionsDialog(items, {
+      showAudioGainControl: connectState === CONNECTED,
+      audioGain,
+      sessionStartTime: sessionStartTimeRef.current,
+      sessionLimitSeconds: sessionLimitSecondsRef.current,
+      sessionPlaytimeLabel: t('Session Playtime'),
+      minLeftLabel: t('{{min}} min left', {min: 999}).replace('999', '%d'),
+    });
+    optionsDialogOpenRef.current = false;
+
+    if (result?.action !== 'select') {
+      handleCloseModal();
+      return;
+    }
+
+    handleCloseModal();
+
+    switch (result.id) {
+      case 'togglePerformance':
+        setShowPerformance(!showPerformance);
+        break;
+      case 'toggleVirtualGamepad':
+        if (showVirtualGamepad) {
+          clearMacroTimers();
+        }
+        setShowVirtualGamepad(!showVirtualGamepad);
+        break;
+      case 'toggleRecording': {
+        const currentlyRecording = await gameRecorder
+          .isRecording()
+          .catch(() => false);
+        if (currentlyRecording) {
+          try {
+            await gameRecorder.stopRecording();
+            setIsRecording(false);
+            ToastAndroid.show(
+              t('Recording saved to Movies/XStreaming'),
+              ToastAndroid.LONG,
+            );
+          } catch (err: any) {
+            setIsRecording(false);
+            ToastAndroid.show(err?.message || 'Error', ToastAndroid.SHORT);
+          }
+        } else {
+          try {
+            await gameRecorder.startRecording(1920, 1080);
+            setIsRecording(true);
+            if (activeWebrtcClientRef.current) {
+              activeWebrtcClientRef.current.requestVideoKeyframe(true);
+              setTimeout(() => {
+                activeWebrtcClientRef.current?.requestVideoKeyframe(true);
+              }, 200);
+              setTimeout(() => {
+                activeWebrtcClientRef.current?.requestVideoKeyframe(true);
+              }, 500);
+            }
+            ToastAndroid.show(t('Recording started'), ToastAndroid.SHORT);
+          } catch (err: any) {
+            setIsRecording(false);
+            ToastAndroid.show(err?.message || 'Error', ToastAndroid.SHORT);
+          }
+        }
+        break;
+      }
+      case 'takeScreenshot': {
+        try {
+          await screenshot.captureScreen();
+          ToastAndroid.show(
+            t('Screenshot saved to Pictures/XStreaming'),
+            ToastAndroid.SHORT,
+          );
+        } catch (err: any) {
+          ToastAndroid.show(err?.message || 'Error', ToastAndroid.SHORT);
+        }
+        break;
+      }
+      case 'editVirtualGamepad':
+        handleOpenGamepadEditor();
+        break;
+      case 'toggleMicrophone':
+        await handleToggleMic();
+        break;
+      case 'pressNexus':
+        gpState.Nexus = 1;
+        setTimeout(() => {
+          gpState.Nexus = 0;
+        }, 120);
+        break;
+      case 'longPressNexus':
+        gpState.Nexus = 1;
+        setTimeout(() => {
+          gpState.Nexus = 0;
+        }, 1000);
+        break;
+      case 'sendText':
+        openSendTextDialog();
+        break;
+      case 'disconnectPowerOff':
+        requestExit(true);
+        break;
+      case 'saveSessionAndDisconnect':
+        pureStreamExit();
+        break;
+      case 'disconnect':
+        requestExit(false);
+        break;
+      default:
+        break;
+    }
+  }, [
+    clearMacroTimers,
+    audioGain,
+    connectState,
+    handleCloseModal,
+    handleOpenGamepadEditor,
+    handleToggleMic,
+    isInPictureInPicture,
+    openMicro,
+    openSendTextDialog,
+    portraitMode,
+    requestExit,
+    pureStreamExit,
+    route.params?.streamType,
+    settings.enable_microphone,
+    settings.power_on,
+    showNativeOptionsDialog,
+    showPerformance,
+    showVirtualGamepad,
+    isRecording,
+    t,
+  ]);
+
+  React.useEffect(() => {
+    if (showModal) {
+      openOptionsModal();
+    }
+  }, [openOptionsModal, showModal]);
+
+  const renderVirtualGamepad = () => {
+    if (portraitMode) {
+      return null;
+    }
+    if (isInPictureInPicture || !showVirtualGamepad) {
+      return null;
+    }
+    const useCustomVirtualGamepad = settings.custom_virtual_gamepad !== '';
+    if (useCustomVirtualGamepad) {
+      return (
+        <CustomVirtualGamepad
+          title={settings.custom_virtual_gamepad}
+          opacity={settings.virtual_gamepad_opacity}
+          onPressIn={handleButtonPressIn}
+          onPressOut={handleButtonPressOut}
+          onStickMove={handleStickMove}
+          refreshKey={gamepadLayoutVersion}
+        />
+      );
+    } else {
+      return (
+        <VirtualGamepad
+          opacity={settings.virtual_gamepad_opacity}
+          onPressIn={handleButtonPressIn}
+          onPressOut={handleButtonPressOut}
+          onStickMove={handleStickMove}
+        />
+      );
+    }
+  };
+
+  const renderPerformancePanel = () => {
+    if (!portraitMode && showPerformance && !isInPictureInPicture) {
+      return (
+        <PerfPanel
+          performance={performance}
+          streamType={route.params?.streamType}
+        />
+      );
+    } else {
+      return null;
+    }
+  };
+
+  const renderMenu = () => {
+    if (!portraitMode && settings.show_menu && !isInPictureInPicture) {
+      return (
+        <View style={styles.quickMenu}>
+          <IconButton
+            icon="menu"
+            size={28}
+            onPress={() => {
+              setShowModal(true);
+            }}
+          />
+        </View>
+      );
+    } else {
+      return null;
+    }
+  };
+
+  const useFsrRenderer = !!settings.fsr;
+  const fsrSharpness = settings.fsr_display_options?.sharpness ?? 2;
+  const handleNativePointerInput = React.useCallback(
+    (event: PointerWireData) => {
+      if (!webrtcClient || !settings.native_touch) {
+        return;
+      }
+
+      webrtcClient.getChannelProcessor('input')?.queuePointerInput([event]);
+    },
+    [settings.native_touch, webrtcClient],
+  );
+
+  const video_format = settings.native_touch ? '' : settings.video_format;
+  const loadingPosterUrl =
+    typeof route.params?.postUrl === 'string' ? route.params.postUrl : '';
+  const showLoadingPoster = loading && !!loadingPosterUrl;
+  const portraitSafeTop =
+    portraitMode && Platform.OS === 'android'
+      ? StatusBar.currentHeight || 0
+      : 0;
+  const portraitVideoHeight = Math.round((screenWidth * 9) / 16);
+
+  const renderStreamPlayer = (containerStyle: any, playerStyle: any) => {
+    if (showLoadingPoster || !remoteStream.current?.toURL()) {
+      return null;
+    }
+
+    const objectFit = video_format === 'Zoom' ? 'cover' : 'contain';
+
+    if (settings.smart_frame_generation) {
+      return (
+        <View style={containerStyle}>
+          <RTCFrameGenView
+            style={playerStyle}
+            zOrder={9}
+            objectFit={objectFit}
+            streamURL={remote}
+            videoFormat={video_format || ''}
+            fsrEnabled={useFsrRenderer}
+            fsrSharpness={fsrSharpness}
+            logVerbose={!!settings.debug}
+            videoFps={60}
+          />
+          <NativeTouchOverlay
+            enabled={!!settings.native_touch && !isInPictureInPicture}
+            videoFormat={video_format || ''}
+            onPointerInput={handleNativePointerInput}
+          />
+        </View>
+      );
+    }
+
+    if (useFsrRenderer) {
+      return (
+        <View style={containerStyle}>
+          <RTCFsrView
+            style={playerStyle}
+            zOrder={9}
+            objectFit={objectFit}
+            streamURL={remote}
+            videoFormat={video_format || ''}
+            fsrEnabled={true}
+            fsrSharpness={fsrSharpness}
+          />
+          <NativeTouchOverlay
+            enabled={!!settings.native_touch && !isInPictureInPicture}
+            videoFormat={video_format || ''}
+            onPointerInput={handleNativePointerInput}
+          />
+        </View>
+      );
+    }
+
+    return (
+      <View style={containerStyle}>
+        <RTCView
+          style={playerStyle}
+          zOrder={9}
+          objectFit={objectFit}
+          streamURL={remote}
+          videoFormat={video_format || ''}
+        />
+        <NativeTouchOverlay
+          enabled={!!settings.native_touch && !isInPictureInPicture}
+          videoFormat={video_format || ''}
+          onPointerInput={handleNativePointerInput}
+        />
+      </View>
+    );
+  };
+
+  const renderPortraitVirtualGamepad = () => {
+    if (!portraitMode || connectState !== CONNECTED) {
+      return null;
+    }
+
+    return (
+      <PortraitVirtualGamepad
+        layout={settings.native_portrait_gamepad_layout}
+        opacity={settings.virtual_gamepad_opacity ?? 0.7}
+        editing={portraitGamepadEditing}
+        onEditingChange={setPortraitGamepadEditing}
+        onLayoutChange={savePortraitGamepadLayout}
+        onResetDefault={resetPortraitGamepadLayout}
+        onPressIn={handleButtonPressIn}
+        onPressOut={handleButtonPressOut}
+        onStickMove={handleStickMove}
+      />
+    );
+  };
+
+  const confirmPortraitExit = () => {
+    Alert.alert(t('Warning'), t('Exit stream?'), [
+      {
+        text: t('Cancel'),
+        style: 'cancel',
+      },
+      {
+        text: t('Confirm'),
+        style: 'destructive',
+        onPress: () => requestExit(false),
+      },
+    ]);
+  };
+
+  if (portraitMode) {
+    return (
+      <View style={styles.portraitContainer}>
+        {showLoadingPoster && (
+          <View style={styles.loadingPosterContainer} pointerEvents="none">
+            <Image
+              source={{uri: loadingPosterUrl}}
+              style={styles.loadingPosterBackdrop}
+              resizeMode="cover"
+              blurRadius={8}
+            />
+            <Image
+              source={{uri: loadingPosterUrl}}
+              style={styles.loadingPoster}
+              resizeMode="contain"
+            />
+            <View style={styles.loadingPosterMask} />
+          </View>
+        )}
+
+        {loading && (
+          <Spinner
+            loading={true}
+            text={loadingText}
+            textStyle={
+              showLoadingPoster ? styles.loadingSpinnerText : undefined
+            }
+            cancelable={true}
+            closeCb={() => {
+              setLoading(false);
+              confirmPortraitExit();
+            }}
+          />
+        )}
+
+        <View
+          style={[
+            styles.portraitVideoFrame,
+            {
+              height: portraitVideoHeight,
+              marginTop: portraitSafeTop,
+            },
+          ]}>
+          {renderStreamPlayer(
+            styles.portraitPlayerContainer,
+            styles.portraitPlayer,
+          )}
+        </View>
+
+        <View style={styles.portraitControls}>
+          {renderPortraitVirtualGamepad()}
+        </View>
+
+        {playtimeReminder.visible && (
+          <View style={styles.playtimeReminderBanner} pointerEvents="box-none">
+            <View style={styles.playtimeReminderCard}>
+              <Text style={styles.playtimeReminderIcon}>⚠️</Text>
+              <View style={styles.playtimeReminderTextWrap}>
+                <Text style={styles.playtimeReminderTitle}>
+                  {t('Session limit warning')}
+                </Text>
+                <Text style={styles.playtimeReminderMessage}>
+                  {t(
+                    '{{min}} minutes remaining in this session. Save your progress soon!',
+                    {min: playtimeReminder.minutes},
+                  )}
+                </Text>
+              </View>
+              <IconButton
+                icon="close"
+                size={18}
+                iconColor="#fff"
+                onPress={() =>
+                  setPlaytimeReminder(prev => ({...prev, visible: false}))
+                }
+              />
+            </View>
+          </View>
+        )}
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      {showLoadingPoster && !isInPictureInPicture && (
+        <View style={styles.loadingPosterContainer} pointerEvents="none">
+          <Image
+            source={{uri: loadingPosterUrl}}
+            style={styles.loadingPosterBackdrop}
+            resizeMode="cover"
+            blurRadius={8}
+          />
+          <Image
+            source={{uri: loadingPosterUrl}}
+            style={styles.loadingPoster}
+            resizeMode="contain"
+          />
+          <View style={styles.loadingPosterMask} />
+        </View>
+      )}
+
+      {loading && !isInPictureInPicture && (
+        <Spinner
+          loading={true}
+          text={loadingText}
+          textStyle={showLoadingPoster ? styles.loadingSpinnerText : undefined}
+          cancelable={true}
+          closeCb={() => {
+            setLoading(false);
+            setShowModal(true);
+          }}
+        />
+      )}
+
+      {renderStreamPlayer(styles.playerContainer, styles.player)}
+
+      {renderPerformancePanel()}
+
+      {renderVirtualGamepad()}
+
+      <VirtualGamepadEditor
+        visible={!portraitMode && showGamepadEditor && !isInPictureInPicture}
+        profileName={editorProfile || getActiveProfileName()}
+        onSave={handleSaveGamepadLayout}
+        onCancel={() => setShowGamepadEditor(false)}
+      />
+
+      <RecordingIndicator visible={isRecording} />
+
+      {playtimeReminder.visible && !isInPictureInPicture && (
+        <View style={styles.playtimeReminderBanner} pointerEvents="box-none">
+          <View style={styles.playtimeReminderCard}>
+            <Text style={styles.playtimeReminderIcon}>⚠️</Text>
+            <View style={styles.playtimeReminderTextWrap}>
+              <Text style={styles.playtimeReminderTitle}>
+                {t('Session limit warning')}
+              </Text>
+              <Text style={styles.playtimeReminderMessage}>
+                {t(
+                  '{{min}} minutes remaining in this session. Save your progress soon!',
+                  {min: playtimeReminder.minutes},
+                )}
+              </Text>
+            </View>
+            <IconButton
+              icon="close"
+              size={18}
+              iconColor="#fff"
+              onPress={() =>
+                setPlaytimeReminder(prev => ({...prev, visible: false}))
+              }
+            />
+          </View>
+        </View>
+      )}
+
+      {renderMenu()}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: 'black',
+  },
+  loadingPosterContainer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingPosterBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  loadingPosterMask: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.32)',
+  },
+  loadingPoster: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  loadingSpinnerText: {
+    fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.8)',
+    textShadowOffset: {width: 0, height: 2},
+    textShadowRadius: 6,
+  },
+  playerContainer: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'black',
+  },
+  player: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'black',
+  },
+  portraitContainer: {
+    flex: 1,
+    backgroundColor: 'black',
+  },
+  portraitVideoFrame: {
+    width: '100%',
+    backgroundColor: 'black',
+  },
+  portraitPlayerContainer: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'black',
+  },
+  portraitPlayer: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: 'black',
+  },
+  portraitControls: {
+    flex: 1,
+    backgroundColor: '#050505',
+  },
+  quickMenu: {
+    position: 'absolute',
+    right: 5,
+    bottom: 5,
+    zIndex: 99,
+  },
+  playtimeReminderBanner: {
+    position: 'absolute',
+    top: 24,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 999,
+  },
+  playtimeReminderCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(20, 20, 20, 0.94)',
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#E6A23C',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    maxWidth: '90%',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 4},
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  playtimeReminderIcon: {
+    fontSize: 22,
+    marginRight: 10,
+  },
+  playtimeReminderTextWrap: {
+    flexShrink: 1,
+    marginRight: 8,
+  },
+  playtimeReminderTitle: {
+    color: '#E6A23C',
+    fontSize: 13,
+    fontWeight: 'bold',
+  },
+  playtimeReminderMessage: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    marginTop: 2,
+  },
+});
+
+function NativeStreamScreen(props: NativeStreamScreenProps) {
+  return <NativeStreamScreenBase {...props} />;
+}
+
+export default NativeStreamScreen;

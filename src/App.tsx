@@ -1,0 +1,754 @@
+import React from 'react';
+import {
+  Alert,
+  Animated,
+  DeviceEventEmitter,
+  Linking,
+  useColorScheme,
+  NativeModules,
+  StyleSheet,
+  View,
+  Easing,
+} from 'react-native';
+import {
+  Button,
+  Dialog,
+  PaperProvider,
+  MD3DarkTheme,
+  MD3LightTheme,
+  Portal,
+  ProgressBar,
+  Text,
+  useTheme,
+  adaptNavigationTheme,
+} from 'react-native-paper';
+
+import {
+  createStackNavigator,
+  HeaderStyleInterpolators,
+} from '@react-navigation/stack';
+import {
+  createNavigationContainerRef,
+  NavigationContainer,
+  DarkTheme as NavigationDarkTheme,
+  DefaultTheme as NavigationDefaultTheme,
+} from '@react-navigation/native';
+
+import merge from 'deepmerge';
+import {Provider} from 'react-redux';
+import store from './store';
+import {
+  getSettings,
+  saveSettings,
+  SETTINGS_CHANGED_EVENT,
+  Settings,
+} from './store/settingStore';
+import {saveServerData} from './store/serverStore';
+import {findTitleByProductId} from './store/shortcutStore';
+
+import customLightTheme from './theme/index';
+import customDarkTheme from './theme/index.dark';
+
+import HomeScreen from './pages/Home';
+import CloudScreen from './pages/Cloud';
+import FriendsScreen from './pages/Friends';
+import AchivementScreen from './pages/Achivements';
+import AchivementDetailScreen from './pages/ArchivementDetail';
+import LoginScreen from './pages/Login';
+import StreamScreen from './pages/Stream';
+import NativeStreamScreen from './pages/NativeStream';
+import NativePortraitStreamScreen from './pages/NativePortraitStream';
+import NanoStreamScreen from './pages/NanoStream';
+import SettingsScreen from './pages/Settings';
+import SettingDetailScreen from './pages/SettingDetail';
+import TitleDetailScreen from './pages/TitleDetail';
+import DebugScreen from './pages/Debug';
+import GameMapScreen from './pages/GameMap';
+import NativeGameMapScreen from './pages/NativeGameMap';
+import GameMapDetailScreen from './pages/GameMapDetail';
+import DisplaySettingsScreen from './pages/DisplaySettings';
+import AboutScreen from './pages/About';
+import AboutZhScreen from './pages/AboutZh';
+import FeedbackScreen from './pages/Feedback';
+import VirtualGamepadSettingsScreen from './pages/VirtualGamepadSettings';
+import CustomGamepadScreen from './pages/CustomGamepad';
+import HoldButtonsScreen from './pages/HoldButtons';
+import VirtualMacroSettingsScreen from './pages/VirtualMacroSettings';
+import Ds5SettingsScreen from './pages/Ds5Settings';
+import DeviceInfosScreen from './pages/DeviceInfos';
+import GamepadTestScreen from './pages/GamepadTest';
+import TransferScreen from './pages/Transfer';
+import ThanksScreen from './pages/Thanks';
+import HistoryScreen from './pages/History';
+import ServerScreen from './pages/Server';
+import updater from './utils/updater';
+import getServer from './utils/get-server';
+import {
+  applyPrimaryColorToPaperTheme,
+  DEFAULT_THEME_PRIMARY_COLOR,
+  normalizeHexColor,
+} from './utils/themeColor';
+import XboxSymbolBackground from './components/XboxSymbolBackground';
+
+import {useTranslation} from 'react-i18next';
+
+import {SystemBars} from 'react-native-edge-to-edge';
+
+import './i18n';
+import SearchScreen from './pages/Search';
+
+const RootStack = createStackNavigator();
+const navigationRef = createNavigationContainerRef<any>();
+
+const {UsbRumbleManager, FullScreenManager, UpdateManager, ShortcutManager} =
+  NativeModules;
+const UPDATE_PROGRESS_EVENT = 'UpdateManagerProgress';
+const TITLE_SHORTCUT_EVENT = 'onTitleShortcutOpen';
+
+const formatUpdateBytes = (bytes?: number) => {
+  if (!bytes || bytes <= 0) {
+    return '0 MB';
+  }
+
+  const mb = bytes / 1024 / 1024;
+  return `${mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)} MB`;
+};
+
+const {LightTheme, DarkTheme} = adaptNavigationTheme({
+  reactNavigationLight: NavigationDefaultTheme,
+  reactNavigationDark: NavigationDarkTheme,
+});
+
+const PAGE_BACKGROUND_LIGHT = '#FCFBFF';
+const PAGE_BACKGROUND_DARK = '#111320';
+
+const withPageBackground = (ScreenComponent: any) => {
+  const WrappedScreen = (props: any) => {
+    const theme = useTheme();
+    const isLight = !theme.dark;
+    const primaryColor = theme.colors.primary;
+
+    return (
+      <View
+        style={[
+          styles.backgroundScreen,
+          isLight ? styles.backgroundScreenLight : styles.backgroundScreenDark,
+        ]}>
+        <XboxSymbolBackground isLight={isLight} primaryColor={primaryColor} />
+        <View style={styles.backgroundContent}>
+          <ScreenComponent {...props} />
+        </View>
+      </View>
+    );
+  };
+
+  WrappedScreen.displayName = `WithPageBackground(${
+    ScreenComponent.displayName || ScreenComponent.name || 'Screen'
+  })`;
+  return WrappedScreen;
+};
+
+const withSolidPageBackground = (ScreenComponent: any) => {
+  const WrappedScreen = (props: any) => {
+    const theme = useTheme();
+    const isLight = !theme.dark;
+
+    return (
+      <View
+        style={[
+          styles.backgroundScreen,
+          isLight ? styles.backgroundScreenLight : styles.backgroundScreenDark,
+        ]}>
+        <View style={styles.backgroundContent}>
+          <ScreenComponent {...props} />
+        </View>
+      </View>
+    );
+  };
+
+  WrappedScreen.displayName = `WithSolidPageBackground(${
+    ScreenComponent.displayName || ScreenComponent.name || 'Screen'
+  })`;
+  return WrappedScreen;
+};
+
+const forSettingsSlide = ({
+  current,
+  inverted,
+  layouts: {screen},
+}: any) => ({
+  cardStyle: {
+    opacity: current.progress.interpolate({
+      inputRange: [0, 0.25, 1],
+      outputRange: [0, 0.85, 1],
+      extrapolate: 'clamp',
+    }),
+    transform: [
+      {
+        translateX: Animated.multiply(
+          current.progress.interpolate({
+            inputRange: [0, 1],
+            outputRange: [screen.width, 0],
+            extrapolate: 'clamp',
+          }),
+          inverted,
+        ),
+      },
+    ],
+  },
+});
+
+const settingsTransitionSpec = {
+  open: {
+    animation: 'timing' as const,
+    config: {
+      duration: 280,
+      easing: Easing.bezier(0.2, 0, 0, 1),
+    },
+  },
+  close: {
+    animation: 'timing' as const,
+    config: {
+      duration: 240,
+      easing: Easing.bezier(0.4, 0, 1, 1),
+    },
+  },
+};
+
+const HomeBackgroundScreen = withPageBackground(HomeScreen);
+const CloudBackgroundScreen = withPageBackground(CloudScreen);
+const FriendsBackgroundScreen = withPageBackground(FriendsScreen);
+const AchivementBackgroundScreen = withPageBackground(AchivementScreen);
+const AchivementDetailBackgroundScreen = withPageBackground(
+  AchivementDetailScreen,
+);
+const LoginBackgroundScreen = withPageBackground(LoginScreen);
+const SettingsBackgroundScreen = withSolidPageBackground(SettingsScreen);
+const SettingDetailBackgroundScreen = withPageBackground(SettingDetailScreen);
+const TitleDetailBackgroundScreen = withPageBackground(TitleDetailScreen);
+const DebugBackgroundScreen = withPageBackground(DebugScreen);
+const GameMapBackgroundScreen = withPageBackground(GameMapScreen);
+const NativeGameMapBackgroundScreen = withPageBackground(NativeGameMapScreen);
+const GameMapDetailBackgroundScreen = withPageBackground(GameMapDetailScreen);
+const DisplaySettingsBackgroundScreen = withPageBackground(
+  DisplaySettingsScreen,
+);
+const AboutBackgroundScreen = withPageBackground(AboutScreen);
+const AboutZhBackgroundScreen = withPageBackground(AboutZhScreen);
+const FeedbackBackgroundScreen = withPageBackground(FeedbackScreen);
+const VirtualGamepadSettingsBackgroundScreen = withPageBackground(
+  VirtualGamepadSettingsScreen,
+);
+const HoldButtonsBackgroundScreen = withPageBackground(HoldButtonsScreen);
+const VirtualMacroSettingsBackgroundScreen = withPageBackground(
+  VirtualMacroSettingsScreen,
+);
+const Ds5SettingsBackgroundScreen = withPageBackground(Ds5SettingsScreen);
+const DeviceInfosBackgroundScreen = withPageBackground(DeviceInfosScreen);
+const GamepadTestBackgroundScreen = withPageBackground(GamepadTestScreen);
+const TransferBackgroundScreen = withPageBackground(TransferScreen);
+const ThanksBackgroundScreen = withPageBackground(ThanksScreen);
+const HistoryBackgroundScreen = withPageBackground(HistoryScreen);
+const ServerBackgroundScreen = withPageBackground(ServerScreen);
+const SearchBackgroundScreen = withPageBackground(SearchScreen);
+
+function App() {
+  const {t} = useTranslation();
+  const colorScheme = useColorScheme();
+  const [settings, setSettings] = React.useState<Settings>(() => getSettings());
+  const deviceInfos = FullScreenManager.getDeviceInfos();
+  const updateCheckedRef = React.useRef(false);
+  const pendingTitleShortcutRef = React.useRef<any>(null);
+  const [updateProgressVisible, setUpdateProgressVisible] =
+    React.useState(false);
+  const [updateProgress, setUpdateProgress] = React.useState({
+    downloadedBytes: 0,
+    progress: 0,
+    status: 'idle',
+    totalBytes: 0,
+  });
+
+  React.useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      SETTINGS_CHANGED_EVENT,
+      (nextSettings: Settings) => {
+        if (nextSettings) {
+          setSettings({...nextSettings});
+        }
+      },
+    );
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      UPDATE_PROGRESS_EVENT,
+      (event: any) => {
+        setUpdateProgress({
+          downloadedBytes: Number(event?.downloadedBytes) || 0,
+          progress: Number(event?.progress) || 0,
+          status: event?.status || 'downloading',
+          totalBytes: Number(event?.totalBytes) || 0,
+        });
+      },
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  const openTitleShortcut = React.useCallback(
+    (shortcut: any) => {
+      if (!shortcut?.productId) {
+        return;
+      }
+
+      if (!navigationRef.isReady()) {
+        pendingTitleShortcutRef.current = shortcut;
+        return;
+      }
+
+      const titleItem = findTitleByProductId(shortcut.productId);
+      if (!titleItem) {
+        Alert.alert(t('Warning'), t('TitleShortcutExpired'));
+        return;
+      }
+
+      navigationRef.navigate('TitleDetail', {titleItem});
+    },
+    [t],
+  );
+
+  React.useEffect(() => {
+    if (!ShortcutManager?.getInitialShortcut) {
+      return;
+    }
+
+    ShortcutManager.getInitialShortcut()
+      .then((shortcut: any) => {
+        openTitleShortcut(shortcut);
+      })
+      .catch(() => {});
+
+    const subscription = DeviceEventEmitter.addListener(
+      TITLE_SHORTCUT_EVENT,
+      openTitleShortcut,
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, [openTitleShortcut]);
+
+  React.useEffect(() => {
+    if (!settings.check_update || updateCheckedRef.current) {
+      return;
+    }
+
+    updateCheckedRef.current = true;
+    updater().then((infos: any) => {
+      if (infos) {
+        const {latestVer, version, updateText, pageUrl, apkUrl, apkName, url} =
+          infos;
+        const updateUrl = pageUrl || url;
+        const buttons: any[] = [
+          {
+            text: t('Cancel'),
+            style: 'default',
+            onPress: () => {},
+          },
+          {
+            text: t('Manual download'),
+            style: 'default',
+            onPress: () => {
+              Linking.openURL(updateUrl).catch(_ => {});
+            },
+          },
+        ];
+
+        if (apkUrl) {
+          buttons.push({
+            text: t('Auto install'),
+            style: 'default',
+            onPress: () => {
+              const showAutoInstallError = (e?: any) => {
+                setUpdateProgressVisible(false);
+                const message =
+                  e?.code === 'INSTALL_PERMISSION_REQUIRED'
+                    ? t('InstallPermissionRequired')
+                    : t('AutoInstallFailed');
+                Alert.alert(t('Warning'), message, [
+                  {
+                    text: t('Manual download'),
+                    style: 'default',
+                    onPress: () => {
+                      Linking.openURL(updateUrl).catch(_ => {});
+                    },
+                  },
+                  {
+                    text: t('Confirm'),
+                    style: 'cancel',
+                  },
+                ]);
+              };
+
+              if (!UpdateManager?.downloadAndInstall) {
+                showAutoInstallError();
+                return;
+              }
+
+              setUpdateProgress({
+                downloadedBytes: 0,
+                progress: 0,
+                status: 'downloading',
+                totalBytes: 0,
+              });
+              setUpdateProgressVisible(true);
+              UpdateManager.downloadAndInstall(apkUrl, apkName).catch(
+                showAutoInstallError,
+              );
+            },
+          });
+        }
+
+        Alert.alert(
+          t('Update Warning'),
+          t(
+            `Check new version ${latestVer}, current version is ${version}. \n ${updateText}`,
+          ),
+          buttons,
+        );
+      }
+    });
+  }, [settings.check_update, t]);
+
+  React.useEffect(() => {
+    if (settings.bind_usb_device !== undefined) {
+      UsbRumbleManager.setBindUsbDevice(settings.bind_usb_device);
+    }
+  }, [settings.bind_usb_device]);
+
+  React.useEffect(() => {
+    getServer().then((data: any) => {
+      if (data && data.url && data.username && data.credential) {
+        saveServerData(data);
+      }
+    });
+  }, []);
+
+  const primaryColor = normalizeHexColor(
+    settings.theme_primary_color,
+    DEFAULT_THEME_PRIMARY_COLOR,
+  );
+  const paperLightTheme = applyPrimaryColorToPaperTheme(
+    {
+      ...MD3LightTheme,
+      colors: customLightTheme.colors,
+    },
+    'light',
+    primaryColor,
+  );
+  const paperDarkTheme = applyPrimaryColorToPaperTheme(
+    {
+      ...MD3DarkTheme,
+      colors: customDarkTheme.colors,
+    },
+    'dark',
+    primaryColor,
+  );
+  const CombinedDefaultTheme = merge(paperLightTheme, LightTheme);
+  const CombinedDarkTheme = merge(paperDarkTheme, DarkTheme);
+  CombinedDefaultTheme.colors.background = PAGE_BACKGROUND_LIGHT;
+  CombinedDefaultTheme.colors.card = PAGE_BACKGROUND_LIGHT;
+  CombinedDarkTheme.colors.background = PAGE_BACKGROUND_DARK;
+  CombinedDarkTheme.colors.card = PAGE_BACKGROUND_DARK;
+
+  let paperTheme = paperDarkTheme;
+  let navigationTheme = CombinedDarkTheme;
+
+  if (settings.theme === 'auto') {
+    paperTheme = colorScheme === 'dark' ? paperDarkTheme : paperLightTheme;
+    navigationTheme =
+      colorScheme === 'dark' ? CombinedDarkTheme : CombinedDefaultTheme;
+  } else if (settings.theme === 'light') {
+    paperTheme = paperLightTheme;
+    navigationTheme = CombinedDefaultTheme;
+  }
+
+  const isLight =
+    settings.theme === 'light' ||
+    (settings.theme === 'auto' && colorScheme === 'light');
+
+  if (
+    deviceInfos.factor?.toLocaleUpperCase().indexOf('NINTENDO') > -1 &&
+    deviceInfos.model?.toLocaleUpperCase().indexOf('SWITCHLITE') > -1
+  ) {
+    if (!settings.short_trigger) {
+      settings.short_trigger = true;
+      saveSettings(settings);
+    }
+  }
+
+  const hasDownloadTotal = updateProgress.totalBytes > 0;
+  const normalizedUpdateProgress = hasDownloadTotal
+    ? Math.max(0, Math.min(updateProgress.progress, 1))
+    : 0;
+  const updateProgressPercent = Math.round(normalizedUpdateProgress * 100);
+  const updateProgressText =
+    updateProgress.status === 'installing' ||
+    updateProgress.status === 'completed'
+      ? t('Preparing installation')
+      : hasDownloadTotal
+      ? `${t('Downloaded')} ${updateProgressPercent}% (${formatUpdateBytes(
+          updateProgress.downloadedBytes,
+        )} / ${formatUpdateBytes(updateProgress.totalBytes)})`
+      : `${t('Downloaded')} ${formatUpdateBytes(
+          updateProgress.downloadedBytes,
+        )}`;
+
+  return (
+    <>
+      <Provider store={store}>
+        <PaperProvider theme={paperTheme}>
+          <NavigationContainer
+            ref={navigationRef}
+            theme={navigationTheme}
+            onReady={() => {
+              if (pendingTitleShortcutRef.current) {
+                const shortcut = pendingTitleShortcutRef.current;
+                pendingTitleShortcutRef.current = null;
+                openTitleShortcut(shortcut);
+              }
+            }}>
+            <RootStack.Navigator>
+              <RootStack.Group>
+                <RootStack.Screen
+                  name="Home"
+                  component={HomeBackgroundScreen}
+                  options={{
+                    headerShown: false,
+                    cardStyle: styles.transparentCard,
+                  }}
+                />
+                <RootStack.Screen
+                  name="Cloud"
+                  component={CloudBackgroundScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="Settings"
+                  component={SettingsBackgroundScreen}
+                  options={{
+                    title: t('Settings'),
+                    headerStyleInterpolator: HeaderStyleInterpolators.forFade,
+                    cardStyleInterpolator: forSettingsSlide,
+                    transitionSpec: settingsTransitionSpec,
+                    gestureEnabled: true,
+                    gestureDirection: 'horizontal',
+                  }}
+                />
+                <RootStack.Screen
+                  name="Login"
+                  component={LoginBackgroundScreen}
+                  options={{title: t('Login')}}
+                />
+                <RootStack.Screen
+                  name="Stream"
+                  component={StreamScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="NativeStream"
+                  component={NativeStreamScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="NativePortraitStream"
+                  component={NativePortraitStreamScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="NanoStream"
+                  component={NanoStreamScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="CustomGamepad"
+                  component={CustomGamepadScreen}
+                  options={{headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="VirtualGamepadSettings"
+                  component={VirtualGamepadSettingsBackgroundScreen}
+                  options={{title: t('Custom')}}
+                />
+                <RootStack.Screen
+                  name="HoldButtons"
+                  component={HoldButtonsBackgroundScreen}
+                  options={{title: t('Hold Buttons')}}
+                />
+                <RootStack.Screen
+                  name="VirtualMacroSettings"
+                  component={VirtualMacroSettingsBackgroundScreen}
+                  options={{title: t('Virtual macro settings')}}
+                />
+                <RootStack.Screen
+                  name="Display"
+                  component={DisplaySettingsBackgroundScreen}
+                  options={{title: t('Display')}}
+                />
+                <RootStack.Screen
+                  name="Search"
+                  component={SearchBackgroundScreen}
+                  options={{title: t('Search'), headerShown: false}}
+                />
+                <RootStack.Screen
+                  name="Friends"
+                  component={FriendsBackgroundScreen}
+                  options={{title: t('Friends')}}
+                />
+                <RootStack.Screen
+                  name="Achivements"
+                  component={AchivementBackgroundScreen}
+                  options={{title: t('Achivements')}}
+                />
+                <RootStack.Screen
+                  name="About"
+                  component={AboutBackgroundScreen}
+                  options={{title: t('About')}}
+                />
+                <RootStack.Screen
+                  name="AboutZh"
+                  component={AboutZhBackgroundScreen}
+                  options={{title: t('About')}}
+                />
+                <RootStack.Screen
+                  name="Feedback"
+                  component={FeedbackBackgroundScreen}
+                  options={{title: t('Feedback')}}
+                />
+                <RootStack.Screen
+                  name="Thanks"
+                  component={ThanksBackgroundScreen}
+                  options={{title: t('Thanks')}}
+                />
+                <RootStack.Screen
+                  name="History"
+                  component={HistoryBackgroundScreen}
+                  options={{title: t('HistoryTitle')}}
+                />
+                <RootStack.Screen
+                  name="Server"
+                  component={ServerBackgroundScreen}
+                  options={{title: t('Server')}}
+                />
+                <RootStack.Screen
+                  name="GameMap"
+                  component={GameMapBackgroundScreen}
+                  options={{title: t('GameMap')}}
+                />
+                <RootStack.Screen
+                  name="SettingDetail"
+                  component={SettingDetailBackgroundScreen}
+                />
+                <RootStack.Screen
+                  name="NativeGameMap"
+                  component={NativeGameMapBackgroundScreen}
+                  options={{title: t('GameMap')}}
+                />
+                <RootStack.Screen
+                  name="Ds5"
+                  component={Ds5SettingsBackgroundScreen}
+                  options={{title: t('DualSense')}}
+                />
+                <RootStack.Screen
+                  name="DeviceInfos"
+                  component={DeviceInfosBackgroundScreen}
+                  options={{title: t('Device testing')}}
+                />
+                <RootStack.Screen
+                  name="GamepadTest"
+                  component={GamepadTestBackgroundScreen}
+                  options={{title: t('GamepadTestTitle')}}
+                />
+                <RootStack.Screen
+                  name="Transfer"
+                  component={TransferBackgroundScreen}
+                  options={{title: t('ConfigTransfer')}}
+                />
+                <RootStack.Screen
+                  name="Debug"
+                  component={DebugBackgroundScreen}
+                />
+              </RootStack.Group>
+
+              <RootStack.Group screenOptions={{presentation: 'modal'}}>
+                <RootStack.Screen
+                  name="TitleDetail"
+                  component={TitleDetailBackgroundScreen}
+                />
+                <RootStack.Screen
+                  name="AchivementDetail"
+                  component={AchivementDetailBackgroundScreen}
+                />
+                <RootStack.Screen
+                  name="GameMapDetail"
+                  component={GameMapDetailBackgroundScreen}
+                  options={{title: t('GameMap')}}
+                />
+              </RootStack.Group>
+            </RootStack.Navigator>
+          </NavigationContainer>
+          <Portal>
+            <Dialog
+              visible={updateProgressVisible}
+              onDismiss={() => setUpdateProgressVisible(false)}>
+              <Dialog.Title>{t('Update download')}</Dialog.Title>
+              <Dialog.Content>
+                <Text style={styles.updateProgressText}>
+                  {updateProgressText}
+                </Text>
+                <ProgressBar
+                  progress={normalizedUpdateProgress}
+                  indeterminate={!hasDownloadTotal}
+                />
+              </Dialog.Content>
+              <Dialog.Actions>
+                <Button onPress={() => setUpdateProgressVisible(false)}>
+                  {t('Hide')}
+                </Button>
+              </Dialog.Actions>
+            </Dialog>
+          </Portal>
+        </PaperProvider>
+      </Provider>
+      <SystemBars style={isLight ? 'dark' : 'light'} hidden={false} />
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  backgroundScreen: {
+    flex: 1,
+  },
+  backgroundScreenLight: {
+    backgroundColor: PAGE_BACKGROUND_LIGHT,
+  },
+  backgroundScreenDark: {
+    backgroundColor: PAGE_BACKGROUND_DARK,
+  },
+  backgroundContent: {
+    flex: 1,
+  },
+  transparentCard: {
+    backgroundColor: 'transparent',
+  },
+  updateProgressText: {
+    marginBottom: 12,
+  },
+});
+
+export default App;

@@ -1,0 +1,357 @@
+import React from 'react';
+import {StyleSheet, View, Dimensions} from 'react-native';
+import GamepadButton from './CustomGamepad/GamepadButton';
+import DPadView from './DPadView';
+import AnalogStick from '../components/AnalogStick';
+import {getSettings as getLocalSettings} from '../store/settingStore';
+import {getSettings} from '../store/gamepadStore';
+import {
+  createDefaultMacroLayoutButton,
+  ensureMacroLayoutButton,
+  VIRTUAL_MACRO_BUTTON_NAME,
+} from '../utils/virtualMacro';
+import {
+  createDefaultVirtualDPadButton,
+  ensureVirtualDPadLayoutButton,
+} from '../utils/virtualDPad';
+
+type Props = {
+  title: string;
+  opacity: number;
+  onPressIn: (name: string | string[]) => any;
+  onPressOut: (name: string | string[]) => any;
+  onStickMove: (id: string, position: any) => any;
+  refreshKey?: number;
+};
+
+const CustomVirtualGamepad: React.FC<Props> = ({
+  title,
+  opacity = 0.7,
+  onPressIn,
+  onPressOut,
+  onStickMove,
+  refreshKey = 0,
+}) => {
+  const [buttons, setButtons] = React.useState<any>([]);
+  const localSettings = getLocalSettings();
+
+  const {width: clientW, height: clientH} = Dimensions.get('window');
+
+  React.useEffect(() => {
+    const _settings = getSettings();
+    const {width, height} = Dimensions.get('window');
+
+    const nexusLeft = width * 0.5 - 20;
+    const viewLeft = width * 0.5 - 100;
+    const menuLeft = width * 0.5 + 60;
+    const dpadDefaultButton = createDefaultVirtualDPadButton(15, height - 175, 160, 160);
+
+    const macroDefaultButton = createDefaultMacroLayoutButton(width, height);
+    const _buttons = [
+      {
+        name: 'LeftTrigger',
+        x: 30,
+        y: 40,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'RightTrigger',
+        x: width - 30,
+        y: 40,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'LeftShoulder',
+        x: 30,
+        y: 100,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'RightShoulder',
+        x: width - 30,
+        y: 110,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'A',
+        x: width - 90,
+        y: height - 60,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'B',
+        x: width - 40,
+        y: height - 110,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'X',
+        x: width - 140,
+        y: height - 110,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'Y',
+        x: width - 90,
+        y: height - 160,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'LeftThumb',
+        x: 210,
+        y: height - 80,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'RightThumb',
+        x: width - 235,
+        y: height - 70,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'View',
+        x: viewLeft,
+        y: height - 30,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'Nexus',
+        x: nexusLeft,
+        y: height - 50,
+        scale: 1,
+        show: true,
+      },
+      {
+        name: 'Menu',
+        x: menuLeft,
+        y: height - 30,
+        scale: 1,
+        show: true,
+      },
+      dpadDefaultButton,
+      {
+        name: 'LeftStick',
+        x: 175,
+        y: height - 205,
+        show: true,
+      },
+      {
+        name: 'RightStick',
+        x: width - 265,
+        y: height - 195,
+        show: true,
+      },
+      macroDefaultButton,
+    ];
+    if (_settings[title]) {
+      const exitButtons = _settings[title];
+      setButtons(
+        ensureVirtualDPadLayoutButton(
+          ensureMacroLayoutButton(exitButtons, macroDefaultButton),
+          dpadDefaultButton,
+        ),
+      );
+    } else {
+      setButtons(_buttons);
+    }
+  }, [title, refreshKey]);
+
+  const handlePressIn = (name: string | string[]) => {
+    onPressIn && onPressIn(name);
+  };
+
+  const handlePressOut = (name: string | string[]) => {
+    onPressOut && onPressOut(name);
+  };
+
+  const handleStickMove = (id: string, data: any) => {
+    onStickMove && onStickMove(id, data);
+  };
+
+  return (
+    <View style={styles.wrap} pointerEvents="box-none">
+      {buttons.map((button: any) => {
+        if (!button.show) {
+          return null;
+        }
+        if (
+          button.name === VIRTUAL_MACRO_BUTTON_NAME &&
+          !localSettings.virtual_macro_enabled
+        ) {
+          return null;
+        }
+        if (button.name === 'DPad') {
+          const width = (button.width ?? 160) * (button.scale ?? 1);
+          const height = (button.height ?? 160) * (button.scale ?? 1);
+          return (
+            <DPadView
+              key={button.name}
+              style={[
+                styles.button,
+                {top: button.y, left: button.x, width, height},
+                {opacity},
+              ]}
+              onPressIn={handlePressIn}
+              onPressOut={handlePressOut}
+            />
+          );
+        }
+        if (button.name === 'LeftStick') {
+          if (localSettings.virtual_gamepad_joystick === 1) {
+            return (
+              <View
+                key={button.name}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  zIndex: 9,
+                  width: clientW * 0.5,
+                  height: clientH,
+                }}>
+                <AnalogStick
+                  style={{
+                    width: clientW * 0.5,
+                    height: clientH,
+                  }}
+                  radius={140}
+                  handleRadius={80}
+                  onStickChange={(data: any) => handleStickMove('left', data)}
+                />
+              </View>
+            );
+          } else {
+            return (
+              <View
+                key={button.name}
+                style={[
+                  styles.button,
+                  {top: button.y, left: button.x},
+                  {opacity},
+                ]}>
+                <View style={styles.leftJs}>
+                  <AnalogStick
+                    style={styles.analogStick}
+                    radius={140}
+                    handleRadius={80}
+                    onStickChange={(data: any) => handleStickMove('left', data)}
+                  />
+                </View>
+              </View>
+            );
+          }
+        } else if (button.name === 'RightStick') {
+          if (localSettings.virtual_gamepad_joystick === 1) {
+            return (
+              <View
+                key={button.name}
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: 0,
+                  zIndex: 9,
+                  width: clientW * 0.5,
+                  height: clientH,
+                }}>
+                <AnalogStick
+                  style={{
+                    width: clientW * 0.5,
+                    height: clientH,
+                  }}
+                  radius={150}
+                  handleRadius={100}
+                  onStickChange={(data: any) => handleStickMove('right', data)}
+                />
+              </View>
+            );
+          } else {
+            return (
+              <View
+                key={button.name}
+                style={[
+                  styles.button,
+                  {top: button.y, left: button.x},
+                  {opacity},
+                ]}>
+                <View style={styles.rightJs}>
+                  <AnalogStick
+                    style={styles.analogStick}
+                    radius={140}
+                    handleRadius={80}
+                    onStickChange={(data: any) =>
+                      handleStickMove('right', data)
+                    }
+                  />
+                </View>
+              </View>
+            );
+          }
+        } else {
+          return (
+            <GamepadButton
+              key={button.name}
+              name={button.name}
+              scale={button.scale}
+              style={[
+                styles.button,
+                {opacity},
+                {top: button.y, left: button.x},
+              ]}
+              onPressIn={handlePressIn}
+              onPressOut={handlePressOut}
+            />
+          );
+        }
+      })}
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  wrap: {
+    // backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    bottom: 0,
+    right: 0,
+    zIndex: 9,
+  },
+  button: {
+    opacity: 0.5,
+    position: 'absolute',
+    zIndex: 10,
+  },
+  leftJs: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    overflow: 'hidden',
+  },
+  rightJs: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    overflow: 'hidden',
+  },
+  analogStick: {
+    width: 200,
+    height: 200,
+    borderRadius: 100,
+    backgroundColor: 'rgba(255, 255, 255, .5)',
+    overflow: 'hidden',
+  },
+});
+
+export default CustomVirtualGamepad;

@@ -1,0 +1,1178 @@
+import axios, {AxiosRequestConfig, AxiosResponse} from 'axios';
+import {getSettings} from '../store/settingStore';
+import {storage} from '../store/mmkv';
+import {debugFactory} from '../utils/debug';
+import {expandTeredoCandidates} from './teredoCandidates';
+import TokenStore from '../xal/tokenstore';
+import Msal from '../xal/msal';
+import Xal from '../xal';
+import MsalToken from '../tokens/msaltoken';
+
+const log = debugFactory('xCloud/index.js');
+
+type AuthContext = {
+  _tokenStore: TokenStore;
+  _msal?: Msal;
+  _xal?: Xal;
+} | null;
+
+type PersistedCloudSession = {
+  type: 'cloud';
+  titleId: string;
+  sessionPath: string;
+  host: string;
+  createdAt: number;
+  lastUsedAt: number;
+};
+
+const CLOUD_SESSION_STORAGE_KEY = 'xcloud.activeSession';
+
+export type QueueStateInfo = {
+  state: string;
+  estimatedWaitInSeconds?: number;
+  position?: number;
+};
+
+export default class XcloudApi {
+  private sessionId = '';
+  private sessionPath = '';
+  private readonly host: string;
+  private gsToken: string;
+  private readonly type: 'home' | 'cloud';
+  private readonly authContext: AuthContext;
+  private isStoped = false;
+  private keepAlivePulseInSeconds = 20;
+  private refreshGsTokenPromise: Promise<void> | null = null;
+  private onQueueStateChange?: (info: QueueStateInfo) => void;
+  private currentTitleId = '';
+  private lastWaitTimeFetch = 0;
+  private cachedEstimatedWait = 0;
+  private lastWaitTimeUpdate = 0;
+  private sessionLimitInSeconds = 0;
+
+  getSessionLimitInSeconds(): number {
+    return this.sessionLimitInSeconds;
+  }
+
+  getSessionCreatedAt(): number {
+    const session = this.getPersistedCloudSession();
+    return session?.createdAt || 0;
+  }
+
+  setOnQueueStateChange(cb?: (info: QueueStateInfo) => void) {
+    this.onQueueStateChange = cb;
+  }
+
+  async getTitleWaitTime(titleId: string): Promise<any> {
+    try {
+      const res = await this.authedGet(`${this.host}/v1/waittime/${titleId}`, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      return res.data;
+    } catch (e) {
+      log.info('[getTitleWaitTime] error:', e);
+      return null;
+    }
+  }
+
+  constructor(
+    host: string,
+    gsToken: string,
+    type: 'home' | 'cloud',
+    authentication?: AuthContext | (() => void),
+  ) {
+    this.host = host;
+    this.gsToken = gsToken;
+    this.type = type;
+    this.authContext =
+      typeof authentication === 'function' ? null : authentication ?? null;
+  }
+
+  private requireAuthContext(): NonNullable<AuthContext> {
+    if (!this.authContext) {
+      throw new Error('Authentication context is required for this operation');
+    }
+    return this.authContext;
+  }
+
+  private getAuthHeaders(config: AxiosRequestConfig = {}): AxiosRequestConfig {
+    return {
+      ...config,
+      headers: {
+        ...(config.headers || {}),
+        Authorization: 'Bearer ' + this.gsToken,
+      },
+    };
+  }
+
+  private getSessionUrl(resource = ''): string {
+    if (!this.sessionId && !this.sessionPath) {
+      throw new Error('Streaming session is not started');
+    }
+
+    const sessionHost = this.sessionHost || this.host;
+    const sessionUrl = this.sessionPath
+      ? this.sessionPath.startsWith('http')
+        ? this.sessionPath
+        : `${sessionHost}/${this.sessionPath.replace(/^\/+/, '')}`
+      : `${this.host}/v5/sessions/${this.type}/${this.sessionId}`;
+
+    return resource ? `${sessionUrl}/${resource}` : sessionUrl;
+  }
+
+  private setSessionPath(sessionPath: string, host = this.host) {
+    if (!sessionPath) {
+      throw new Error('Streaming session path is missing');
+    }
+
+    this.sessionPath = sessionPath;
+    this.sessionHost = host;
+    const pathParts = sessionPath.split('/').filter(Boolean);
+    this.sessionId = pathParts[pathParts.length - 1] || '';
+  }
+
+  private sessionHost = '';
+
+  private clearSession() {
+    this.sessionId = '';
+    this.sessionPath = '';
+    this.sessionHost = '';
+  }
+
+  private getPersistedCloudSession(): PersistedCloudSession | null {
+    if (this.type !== 'cloud') {
+      return null;
+    }
+
+    const value = storage.getString(CLOUD_SESSION_STORAGE_KEY);
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const session = JSON.parse(value) as PersistedCloudSession;
+      if (
+        session?.type !== 'cloud' ||
+        !session.titleId ||
+        !session.sessionPath ||
+        !session.host
+      ) {
+        return null;
+      }
+      return session;
+    } catch {
+      return null;
+    }
+  }
+
+  private savePersistedCloudSession(titleId: string, createdAt = Date.now()) {
+    if (this.type !== 'cloud' || !titleId || !this.sessionPath) {
+      return;
+    }
+
+    const session: PersistedCloudSession = {
+      type: 'cloud',
+      titleId,
+      sessionPath: this.sessionPath,
+      host: this.sessionHost || this.host,
+      createdAt,
+      lastUsedAt: Date.now(),
+    };
+    storage.set(CLOUD_SESSION_STORAGE_KEY, JSON.stringify(session));
+  }
+
+  private clearPersistedCloudSession() {
+    if (this.type === 'cloud') {
+      storage.delete(CLOUD_SESSION_STORAGE_KEY);
+    }
+  }
+
+  private isInvalidSessionError(error: unknown): boolean {
+    if (typeof error === 'string') {
+      return error.startsWith('Streaming failed:');
+    }
+
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      return status === 404 || status === 410;
+    }
+
+    return false;
+  }
+
+  private async getConfiguration(): Promise<any> {
+    const result = await this.authedGet(this.getSessionUrl('configuration'), {
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    log.info('[startSession] /configuration res:', JSON.stringify(result.data));
+    const keepAlivePulseInSeconds = Number(
+      result.data?.keepAlivePulseInSeconds,
+    );
+    if (
+      Number.isFinite(keepAlivePulseInSeconds) &&
+      keepAlivePulseInSeconds > 0
+    ) {
+      this.keepAlivePulseInSeconds = keepAlivePulseInSeconds;
+    }
+    return result.data;
+  }
+
+  private isAuthError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+    const status = error.response?.status;
+    return status === 401 || status === 403;
+  }
+
+  private async refreshStreamingToken(): Promise<void> {
+    if (this.refreshGsTokenPromise) {
+      return this.refreshGsTokenPromise;
+    }
+
+    this.refreshGsTokenPromise = (async () => {
+      const auth = this.requireAuthContext();
+      auth._tokenStore.load();
+
+      let streamingTokens: any;
+      const authMethod = auth._tokenStore.getAuthenticationMethod();
+      if (authMethod === 'msal' && auth._msal) {
+        streamingTokens = await auth._msal.getStreamingTokens();
+      } else if (auth._xal) {
+        streamingTokens = await auth._xal.getStreamingToken(auth._tokenStore);
+      } else if (auth._msal) {
+        streamingTokens = await auth._msal.getStreamingTokens();
+      } else {
+        throw new Error('Authentication provider is missing');
+      }
+
+      const nextGsToken =
+        this.type === 'cloud'
+          ? streamingTokens?.xCloudToken?.data?.gsToken
+          : streamingTokens?.xHomeToken?.data?.gsToken;
+
+      if (!nextGsToken) {
+        throw new Error(`[refreshStreamingToken] ${this.type} gsToken missing`);
+      }
+
+      this.gsToken = nextGsToken;
+      log.info('[refreshStreamingToken] streaming token refreshed');
+    })().finally(() => {
+      this.refreshGsTokenPromise = null;
+    });
+
+    return this.refreshGsTokenPromise;
+  }
+
+  private async requestWithAuthRetry<T>(
+    requestFn: () => Promise<AxiosResponse<T>>,
+  ): Promise<AxiosResponse<T>> {
+    try {
+      return await requestFn();
+    } catch (error) {
+      if (!this.authContext || !this.isAuthError(error)) {
+        throw error;
+      }
+
+      log.info('[requestWithAuthRetry] auth failed, refreshing gsToken');
+      await this.refreshStreamingToken();
+      return await requestFn();
+    }
+  }
+
+  private authedGet<T = any>(
+    url: string,
+    config: AxiosRequestConfig = {},
+  ): Promise<AxiosResponse<T>> {
+    return this.requestWithAuthRetry(() =>
+      axios.get<T>(url, this.getAuthHeaders(config)),
+    );
+  }
+
+  private authedPost<T = any>(
+    url: string,
+    data?: any,
+    config: AxiosRequestConfig = {},
+  ): Promise<AxiosResponse<T>> {
+    return this.requestWithAuthRetry(() =>
+      axios.post<T>(url, data, this.getAuthHeaders(config)),
+    );
+  }
+
+  private authedDelete<T = any>(
+    url: string,
+    config: AxiosRequestConfig = {},
+  ): Promise<AxiosResponse<T>> {
+    return this.requestWithAuthRetry(() =>
+      axios.delete<T>(url, this.getAuthHeaders(config)),
+    );
+  }
+
+  getKeepaliveIntervalMs(): number {
+    const pulse = Number(this.keepAlivePulseInSeconds);
+    if (!Number.isFinite(pulse) || pulse <= 0) {
+      return 20 * 1000;
+    }
+    return Math.max(pulse, 5) * 1000;
+  }
+
+  async startSession(
+    consoleId: string,
+    resolution: number,
+    onQueueProgress?: (info: QueueStateInfo) => void,
+  ): Promise<any> {
+    log.info('[startSession] consoleId:', consoleId);
+    this.isStoped = false;
+    this.currentTitleId = this.type === 'cloud' ? consoleId : '';
+    this.cachedEstimatedWait = 0;
+    this.lastWaitTimeFetch = 0;
+    this.lastWaitTimeUpdate = 0;
+    if (onQueueProgress) {
+      this.onQueueStateChange = onQueueProgress;
+    }
+
+    if (this.type === 'cloud') {
+      const persistedSession = this.getPersistedCloudSession();
+      if (persistedSession && persistedSession.titleId === consoleId) {
+        try {
+          this.setSessionPath(
+            persistedSession.sessionPath,
+            persistedSession.host,
+          );
+          await this.waitState();
+          const configuration = await this.getConfiguration();
+          this.savePersistedCloudSession(consoleId, persistedSession.createdAt);
+          log.info('[startSession] reused persisted cloud session');
+          return configuration;
+        } catch (error) {
+          if (!this.isInvalidSessionError(error)) {
+            throw error;
+          }
+          log.info('[startSession] persisted cloud session is invalid');
+          this.clearPersistedCloudSession();
+          this.clearSession();
+        }
+      } else if (persistedSession) {
+        this.clearPersistedCloudSession();
+      }
+    }
+
+    let osName = 'android';
+
+    if (resolution === 1080) {
+      osName = 'windows';
+    } else if (resolution === 1081) {
+      // 1080p-HQ
+      osName = 'tizen';
+    } else {
+      osName = 'android';
+    }
+    const _settings = getSettings();
+    const deviceInfo = JSON.stringify({
+      appInfo: {
+        env: {
+          // clientAppId: 'Microsoft.GamingApp',
+          // clientAppType: 'native',
+          // clientAppVersion: '2203.1001.4.0',
+          // clientSdkVersion: '8.5.2',
+          // httpEnvironment: 'prod',
+          // sdkInstallId: '',
+          clientAppId: 'www.xbox.com',
+          clientAppType: 'browser',
+          clientAppVersion: '29.9.35',
+          clientSdkVersion: '10.6.8',
+          httpEnvironment: 'prod',
+          sdkInstallId: '',
+        },
+      },
+      dev: {
+        hw: {
+          make: 'Microsoft',
+          model: 'unknown',
+          platformType: 'desktop',
+          sdktype: 'web',
+        },
+        os: {
+          // name: 'android', // 720P
+          // name: 'windows', // 1080P
+          // name: 'tizen', // 1080P(HQ) or 1440P
+          // For console streaming
+          name: osName,
+          ver: '22631.2715',
+          platform: 'desktop',
+        },
+        displayInfo: {
+          dimensions: {
+            widthInPixels: 4096,
+            heightInPixels: 2160,
+          },
+          pixelDensity: {
+            dpiX: 1,
+            dpiY: 1,
+          },
+        },
+        browser: {
+          browserName: 'edge',
+          browserVersion: '140.0.3485.66',
+        },
+      },
+    });
+
+    const body = JSON.stringify({
+      clientSessionId: '',
+      titleId: this.type === 'cloud' ? consoleId : '',
+      systemUpdateGroup: '',
+      settings: {
+        nanoVersion: 'V3;WebrtcTransport.dll',
+        enableTextToSpeech: false,
+        highContrast: 0,
+        locale: _settings.preferred_game_language
+          ? _settings.preferred_game_language
+          : 'en-US',
+        useIceConnection: false,
+        timezoneOffsetMinutes: 120,
+        sdkType: 'web',
+        // For xCloud streaming
+        // osName: resolution === 720 ? 'android' : 'windows',
+        osName,
+      },
+      serverId: this.type === 'home' ? consoleId : '',
+      fallbackRegionNames: [],
+    });
+
+    try {
+      const res = await this.authedPost(
+        `${this.host}/v5/sessions/${this.type}/play`,
+        body,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-MS-Device-Info': deviceInfo,
+          },
+        },
+      );
+      if (res.status !== 200 && res.status !== 202) {
+        throw new Error(`[startSession] unexpected status: ${res.status}`);
+      }
+
+      log.info(
+        `[startSession] ${this.host}/v5/sessions/${this.type}/play res:`,
+        res.data,
+      );
+      this.setSessionPath(res.data?.sessionPath);
+      this.savePersistedCloudSession(consoleId);
+      await this.waitState();
+      return await this.getConfiguration();
+    } catch (error) {
+      if (this.isInvalidSessionError(error)) {
+        this.clearPersistedCloudSession();
+        this.clearSession();
+      }
+      log.info('[startSession] error:', error);
+      throw error;
+    }
+  }
+
+  // Check host streaming status is ready or not
+  async waitState(): Promise<any> {
+    try {
+      const res = await this.authedGet(this.getSessionUrl('state'), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      log.info('[waitState] res:', res.data);
+      const _state = res.data;
+      if (_state.transferUri) {
+        this.sessionHost = _state.transferUri;
+      }
+      if (typeof _state.maxSessionDurationInSeconds === 'number') {
+        this.sessionLimitInSeconds = _state.maxSessionDurationInSeconds;
+      } else if (typeof _state.sessionTimeoutInSeconds === 'number') {
+        this.sessionLimitInSeconds = _state.sessionTimeoutInSeconds;
+      } else if (typeof _state.sessionLimitInMinutes === 'number') {
+        this.sessionLimitInSeconds = _state.sessionLimitInMinutes * 60;
+      }
+      switch (_state.state) {
+        case 'Provisioned':
+          this.onQueueStateChange?.({state: 'Provisioned'});
+          return _state;
+        case 'WaitingForResources':
+        case 'Provisioning': {
+          if (this.isStoped) {
+            throw '';
+          }
+
+          let waitSeconds: number | undefined =
+            typeof _state.estimatedTotalWaitTimeInSeconds === 'number'
+              ? _state.estimatedTotalWaitTimeInSeconds
+              : typeof _state.estimatedAllocationTimeInSeconds === 'number'
+              ? _state.estimatedAllocationTimeInSeconds +
+                (_state.estimatedProvisioningTimeInSeconds || 0)
+              : typeof _state.waitingDetails?.estimatedWaitInSeconds === 'number'
+              ? _state.waitingDetails.estimatedWaitInSeconds
+              : typeof _state.waitingDetails?.estimatedTotalWaitTimeInSeconds ===
+                'number'
+              ? _state.waitingDetails.estimatedTotalWaitTimeInSeconds
+              : undefined;
+
+          let position: number | undefined =
+            typeof _state.position === 'number'
+              ? _state.position
+              : typeof _state.queuePosition === 'number'
+              ? _state.queuePosition
+              : typeof _state.waitingDetails?.position === 'number'
+              ? _state.waitingDetails.position
+              : typeof _state.waitingDetails?.positionInQueue === 'number'
+              ? _state.waitingDetails.positionInQueue
+              : undefined;
+
+          const now = Date.now();
+          if (
+            waitSeconds === undefined &&
+            _state.state === 'WaitingForResources' &&
+            this.type === 'cloud' &&
+            this.currentTitleId &&
+            now - this.lastWaitTimeFetch > 15000
+          ) {
+            this.lastWaitTimeFetch = now;
+            try {
+              const waitData = await this.getTitleWaitTime(this.currentTitleId);
+              if (waitData) {
+                if (
+                  typeof waitData.estimatedTotalWaitTimeInSeconds === 'number'
+                ) {
+                  waitSeconds = waitData.estimatedTotalWaitTimeInSeconds;
+                } else if (
+                  typeof waitData.estimatedAllocationTimeInSeconds === 'number'
+                ) {
+                  waitSeconds =
+                    waitData.estimatedAllocationTimeInSeconds +
+                    (waitData.estimatedProvisioningTimeInSeconds || 0);
+                }
+                if (typeof waitData.position === 'number') {
+                  position = waitData.position;
+                }
+              }
+            } catch (e) {
+              log.info('[waitState] getTitleWaitTime error:', e);
+            }
+          }
+
+          if (typeof waitSeconds === 'number' && waitSeconds > 0) {
+            this.cachedEstimatedWait = waitSeconds;
+            this.lastWaitTimeUpdate = now;
+          } else if (this.cachedEstimatedWait > 0) {
+            const elapsed = Math.floor((now - this.lastWaitTimeUpdate) / 1000);
+            waitSeconds = Math.max(0, this.cachedEstimatedWait - elapsed);
+          }
+
+          this.onQueueStateChange?.({
+            state: _state.state,
+            estimatedWaitInSeconds: waitSeconds,
+            position,
+          });
+
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          return await this.waitState();
+        }
+        case 'ReadyToConnect': {
+          this.onQueueStateChange?.({state: 'ReadyToConnect'});
+          const auth = this.requireAuthContext();
+          auth._tokenStore.load();
+          const authMethod = auth._tokenStore.getAuthenticationMethod();
+
+          let tokenPromise: Promise<MsalToken>;
+          if (authMethod === 'msal' && auth._msal) {
+            tokenPromise = auth._msal.getMsalToken();
+          } else if (auth._xal) {
+            tokenPromise = auth._xal.getMsalToken(auth._tokenStore);
+          } else {
+            throw new Error('Authentication provider is missing');
+          }
+
+          const msalToken = await tokenPromise;
+          await this.sendMSALAuth(msalToken.data.lpt);
+          return await this.waitState();
+        }
+        case 'Failed':
+          throw 'Streaming failed: ' + _state.errorDetails?.message;
+        default:
+          log.info('unknown state:', _state);
+          throw 'Streaming failed';
+      }
+    } catch (e) {
+      log.info('[waitState] error:', e);
+      throw e;
+    }
+  }
+
+  // sendSDPOffer
+  sendSDPOffer(sdpOffer: {sdp: string}): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      const body = JSON.stringify({
+        messageType: 'offer',
+        sdp: sdpOffer.sdp,
+        configuration: {
+          chatConfiguration: {
+            bytesPerSample: 2,
+            expectedClipDurationMs: 20,
+            format: {
+              codec: 'opus',
+              container: 'webm',
+            },
+            numChannels: 1,
+            sampleFrequencyHz: 24000,
+          },
+          chat: {
+            minVersion: 1,
+            maxVersion: 1,
+          },
+          control: {
+            minVersion: 1,
+            maxVersion: 3,
+          },
+          input: {
+            minVersion: 1,
+            maxVersion: 8,
+          },
+          message: {
+            minVersion: 1,
+            maxVersion: 1,
+          },
+        },
+      });
+      this.authedPost(this.getSessionUrl('sdp'), body, {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      }).then(() => {
+        // The first post for SDP did not return, so a GET request for SDP response needs to be initiated.
+        this.authedGet(this.getSessionUrl('sdp'), {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }).then(res => {
+          log.info('[sendSDPOffer] res.data:', res.data);
+          if (res.data && res.data.exchangeResponse) {
+            resolve(res.data);
+          } else {
+            const checkInterval = setInterval(() => {
+              if (this.isStoped) {
+                clearInterval(checkInterval);
+                return;
+              }
+              this.authedGet(this.getSessionUrl('sdp'), {
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+              })
+                .then(res2 => {
+                  if (res2.data && res2.data.exchangeResponse) {
+                    resolve(res2.data);
+                    clearInterval(checkInterval);
+                  }
+                })
+                .catch(e => {
+                  reject(e);
+                  clearInterval(checkInterval);
+                });
+            }, 1000);
+          }
+          // resolve(sdpResponse.exchangeResponse);
+        });
+      });
+    });
+  }
+
+  // sendChatSdpOffer
+  sendChatSdp(sdpOffer: {sdp: string}): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      const body = JSON.stringify({
+        messageType: 'offer',
+        sdp: sdpOffer.sdp,
+        configuration: {
+          isMediaStreamsChatRenegotiation: true,
+        },
+      });
+      this.authedPost(this.getSessionUrl('sdp'), body, {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      }).then(() => {
+        // The first post for SDP did not return, so a GET request for SDP response needs to be initiated.
+        this.authedGet(this.getSessionUrl('sdp'), {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }).then(res => {
+          log.info('[sendSChatSdp] res.data:', res.data);
+          if (res.data && res.data.exchangeResponse) {
+            resolve(res.data);
+          } else {
+            const checkInterval = setInterval(() => {
+              if (this.isStoped) {
+                clearInterval(checkInterval);
+                return;
+              }
+              this.authedGet(this.getSessionUrl('sdp'), {
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+              })
+                .then(res2 => {
+                  if (res2.data && res2.data.exchangeResponse) {
+                    resolve(res2.data);
+                    clearInterval(checkInterval);
+                  }
+                })
+                .catch(e => {
+                  reject(e);
+                  clearInterval(checkInterval);
+                });
+            }, 1000);
+          }
+          // resolve(sdpResponse.exchangeResponse);
+        });
+      });
+    });
+  }
+
+  checkIceResponse(): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      this.authedGet(this.getSessionUrl('ice'), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+        .then(iceResponse => {
+          const iceResult = iceResponse.data;
+          log.info('[checkIceResponse] res:', iceResult);
+
+          // If result is empty, continue check
+          if (!iceResult) {
+            setTimeout(() => {
+              this.checkIceResponse()
+                .then(state => {
+                  resolve(state);
+                })
+                .catch(error => {
+                  reject(error);
+                });
+            }, 1000);
+          } else {
+            const exchangeIce = JSON.parse(iceResult.exchangeResponse);
+            resolve(
+              this.type === 'home'
+                ? expandTeredoCandidates(exchangeIce, getSettings().ipv6)
+                : exchangeIce,
+            );
+          }
+        })
+        .catch(e => {
+          log.info('[checkIceResponse] error:', e);
+          reject(e);
+        });
+    });
+  }
+
+  sendICECandidates(iceCandidates: any): Promise<any> {
+    log.info(
+      '[sendICECandidates] iceCandidates:',
+      JSON.stringify(iceCandidates),
+    );
+    return new Promise<any>((resolve, reject) => {
+      const postData = {
+        messageType: 'iceCandidate',
+        candidate: iceCandidates,
+      };
+      this.authedPost(this.getSessionUrl('ice'), JSON.stringify(postData), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+        .then(() => {
+          // Check ICE result
+          this.checkIceResponse()
+            .then(candidates => {
+              resolve(candidates);
+            })
+            .catch(error => {
+              reject(error);
+            });
+        })
+        .catch(error => {
+          reject(error);
+        });
+    });
+  }
+
+  sendMSALAuth(userToken: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.authedPost(
+        this.getSessionUrl('connect'),
+        {
+          userToken,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+        .then(() => {
+          resolve();
+        })
+        .catch(error => {
+          reject(error);
+        });
+    });
+  }
+
+  sendKeepalive(): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      this.authedPost(
+        this.getSessionUrl('keepalive'),
+        {},
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      )
+        .then(res => {
+          resolve(res.data);
+        })
+        .catch(e => {
+          reject('[sendKeepalive] error:' + e);
+        });
+    });
+  }
+
+  stopStream(): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      this.isStoped = true;
+      if (!this.sessionId) {
+        this.clearPersistedCloudSession();
+        this.clearSession();
+        resolve({});
+        return;
+      }
+      this.authedDelete(this.getSessionUrl(), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+        .then(res => {
+          log.info('Stream stop:', res);
+          this.clearPersistedCloudSession();
+          this.clearSession();
+          resolve(res.data);
+        })
+        .catch(e => {
+          this.clearPersistedCloudSession();
+          this.clearSession();
+          reject(e);
+        });
+    });
+  }
+
+  getActiveSessions(): Promise<any[]> {
+    return new Promise<any[]>(resolve => {
+      this.authedGet(`${this.host}/v5/sessions/${this.type}/active`, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+        .then(res => {
+          resolve(res.data);
+        })
+        .catch(e => {
+          log.info('getActiveSessions error: ', e);
+          resolve([]);
+        });
+    });
+  }
+
+  getOfficialTitles(): Promise<any[]> {
+    return new Promise(resolve => {
+      let officialTitles: any[] = [];
+      axios
+        .get('https://cdn.jsdelivr.net/gh/Geocld/XStreaming@main/titles.json', {
+          timeout: 30 * 1000,
+        })
+        .then(res => {
+          if (res.status === 200) {
+            officialTitles = res.data.Products;
+            // console.log('officialTitles:', officialTitles);
+          }
+          resolve(officialTitles);
+        })
+        .catch(() => {
+          resolve([]);
+        });
+    });
+  }
+
+  getGamePassProducts(titles: any[]): Promise<any[]> {
+    return new Promise(resolve => {
+      const productIdQueue: string[] = [];
+      const v2TitleMap: Record<string, any> = {};
+      if (!Array.isArray(titles)) {
+        log.info('[getGamePassProducts] error titles is not a array:', titles);
+        resolve([]);
+      }
+      titles.forEach(title => {
+        if (title.details && title.details.productId) {
+          productIdQueue.push(title.details.productId);
+          v2TitleMap[title.details.productId] = title;
+        }
+      });
+
+      // Get officialTitles
+      this.getOfficialTitles().then(officialTitles => {
+        // Fix: v2/titles API can not get full games
+        this.getCatalogGames(productIdQueue, v2TitleMap).then(titles1 => {
+          this.getCatalogGames(officialTitles, v2TitleMap).then(titles2 => {
+            let mergedTitles = [...titles1, ...titles2];
+            mergedTitles.sort((a, b) =>
+              a.ProductTitle.localeCompare(b.ProductTitle),
+            );
+            mergedTitles = mergedTitles.reduce((acc, current) => {
+              const exists = acc.find(
+                (item: any) => item.ProductTitle === current.ProductTitle,
+              );
+              if (!exists) {
+                acc.push(current);
+              }
+              return acc;
+            }, []);
+            resolve(mergedTitles);
+          });
+        });
+      });
+    });
+  }
+
+  getCatalogGames(
+    prods: string[] = [],
+    v2TitleMap: Record<string, any> = {},
+  ): Promise<any[]> {
+    const _settings = getSettings();
+    const lang =
+      _settings.preferred_game_language.indexOf('zh') > -1 ? 'zh-TW' : 'en-US';
+    return new Promise(resolve => {
+      axios
+        .post(
+          `https://catalog.gamepass.com/v3/products?market=US&language=${lang}&hydration=RemoteLowJade0`,
+          {
+            Products: [...prods],
+          },
+          {
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+              'ms-cv': 0,
+              'calling-app-name': 'Xbox Cloud Gaming Web',
+              'calling-app-version': '24.17.63',
+            },
+          },
+        )
+        .then(res => {
+          console.log('POST catalog.gamepass.com/v3/products success');
+          if (res.data && res.data.Products) {
+            const products = res.data.Products;
+            let mergedTitles: any[] = [];
+            for (const key in products) {
+              if (v2TitleMap[key]) {
+                mergedTitles.push({
+                  productId: key,
+                  ...products[key],
+                  ...v2TitleMap[key],
+                });
+              } else {
+                mergedTitles.push({
+                  productId: key,
+                  ...products[key],
+                });
+              }
+            }
+            mergedTitles.sort((a, b) =>
+              a.ProductTitle.localeCompare(b.ProductTitle),
+            );
+            mergedTitles = mergedTitles.filter(item => {
+              return item.titleId || item.XCloudTitleId;
+            });
+            resolve(mergedTitles);
+          } else {
+            resolve([]);
+          }
+        })
+        .catch(e => {
+          console.log('getGamePassProducts error:', e);
+          // reject(e);
+          resolve([]);
+        });
+    });
+  }
+
+  // Get all games of XGPU
+  getTitles(): Promise<any[]> {
+    return new Promise<any[]>(resolve => {
+      axios
+        .get(`${this.host}/v2/titles`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + this.gsToken,
+          },
+        })
+        .then(res => {
+          resolve(res.data);
+        })
+        .catch(e => {
+          log.info('getTitles error: ', e);
+          resolve([]);
+        });
+    });
+  }
+
+  // Get recently add games of XGPU
+  getNewTitles(): Promise<any[]> {
+    return new Promise<any[]>(resolve => {
+      axios
+        .get(
+          'https://catalog.gamepass.com/sigls/v2?id=f13cf6b4-57e6-4459-89df-6aec18cf0538&market=US&language=en-US',
+        )
+        .then(res => {
+          resolve(res.data);
+        })
+        .catch(() => {
+          resolve([]);
+        });
+    });
+  }
+
+  // Get recently play games of user
+  getRecentTitles(): Promise<any[]> {
+    return new Promise<any[]>(resolve => {
+      axios
+        .get(`${this.host}/v2/titles/mru?mr=25`, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + this.gsToken,
+          },
+        })
+        .then(res => {
+          // log.info('getRecentTitles res:', res.data);
+          resolve(res.data);
+        })
+        .catch(() => {
+          resolve([]);
+        });
+    });
+  }
+
+  // Get alternate ids
+  getAlternateIds(id: string): Promise<any[]> {
+    return new Promise(resolve => {
+      axios
+        .post(
+          `${this.host}/v2/titles`,
+          {
+            alternateIdType: 'productId',
+            alternateIds: [id],
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer ' + this.gsToken,
+            },
+          },
+        )
+        .then(res => {
+          console.log('res.data:', res.data);
+          resolve(res.data || []);
+        })
+        .catch(() => {
+          resolve([]);
+        });
+    });
+  }
+
+  getConsoles(): Promise<any[]> {
+    return new Promise(resolve => {
+      const deviceInfo = JSON.stringify({
+        appInfo: {
+          env: {
+            // clientAppId: 'Microsoft.GamingApp',
+            // clientAppType: 'native',
+            // clientAppVersion: '2203.1001.4.0',
+            // clientSdkVersion: '8.5.2',
+            // httpEnvironment: 'prod',
+            // sdkInstallId: '',
+            clientAppId: 'www.xbox.com',
+            clientAppType: 'browser',
+            clientAppVersion: '26.1.97',
+            clientSdkVersion: '10.3.7',
+            httpEnvironment: 'prod',
+            sdkInstallId: '',
+          },
+        },
+        dev: {
+          hw: {
+            make: 'Microsoft',
+            // 'model': 'Surface Pro',
+            model: 'unknown',
+            // 'sdktype': 'native',
+            sdktype: 'web',
+          },
+          os: {
+            name: 'windows',
+            ver: '22631.2715',
+            platform: 'desktop',
+          },
+          displayInfo: {
+            dimensions: {
+              widthInPixels: 1920,
+              heightInPixels: 1080,
+            },
+            pixelDensity: {
+              dpiX: 1,
+              dpiY: 1,
+            },
+          },
+          browser: {
+            browserName: 'chrome',
+            browserVersion: '130.0',
+          },
+        },
+      });
+      axios
+        .get(`${this.host}/v6/servers/home?mr=50`, {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-MS-Device-Info': deviceInfo,
+            Authorization: 'Bearer ' + this.gsToken,
+          },
+        })
+        .then(res => {
+          log.info('getConsoles res:', res.data);
+          if (res.data && res.data.results) {
+            resolve(res.data.results);
+          } else {
+            resolve([]);
+          }
+        })
+        .catch(e => {
+          console.log('xcloudapi getConsoles err:', e);
+          resolve([]);
+        });
+    });
+  }
+}

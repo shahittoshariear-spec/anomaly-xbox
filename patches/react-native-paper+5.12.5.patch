@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native-paper/src/components/SegmentedButtons/SegmentedButtonItem.tsx b/node_modules/react-native-paper/src/components/SegmentedButtons/SegmentedButtonItem.tsx
+index 92623d2..fa41ada 100644
+--- a/node_modules/react-native-paper/src/components/SegmentedButtons/SegmentedButtonItem.tsx
++++ b/node_modules/react-native-paper/src/components/SegmentedButtons/SegmentedButtonItem.tsx
+@@ -260,7 +260,7 @@
+   content: {
+     flexDirection: 'row',
+     alignItems: 'center',
+     justifyContent: 'center',
+     paddingVertical: 9,
+-    paddingHorizontal: 16,
++    paddingHorizontal: 6,
+   },

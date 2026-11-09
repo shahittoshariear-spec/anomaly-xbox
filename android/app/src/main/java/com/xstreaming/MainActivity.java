@@ -1,0 +1,1080 @@
+package com.xstreaming;
+
+import android.app.Activity;
+import android.app.PictureInPictureParams;
+import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.os.Bundle;
+import android.os.Build;
+import android.util.Log;
+import android.util.Rational;
+import android.util.SparseArray;
+import android.util.SparseBooleanArray;
+import android.util.SparseIntArray;
+import com.facebook.react.ReactActivity;
+import com.facebook.react.bridge.ReactContext;
+import com.facebook.react.ReactActivityDelegate;
+import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
+import com.facebook.react.defaults.DefaultReactActivityDelegate;
+import org.devio.rn.splashscreen.SplashScreen;
+import com.facebook.react.modules.core.DeviceEventManagerModule;
+
+import android.hardware.input.InputManager;
+import android.view.InputEvent;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.InputDevice;
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.WritableArray;
+import com.facebook.react.bridge.WritableMap;
+import android.view.View;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.os.IBinder;
+import android.app.Service;
+import android.content.ServiceConnection;
+import android.view.WindowManager;
+import android.os.SystemClock;
+
+import com.xstreaming.input.UsbDriverService;
+import com.xstreaming.input.ControllerHandler;
+import com.xstreaming.utils.Vector2d;
+
+import java.util.ArrayList;
+import java.util.List;
+
+class Dpad {
+  final static int UP       = 19;
+  final static int LEFT     = 21;
+  final static int RIGHT    = 22;
+  final static int DOWN     = 20;
+  final static int CENTER   = 23;
+
+  int directionPressed = -1; // initialized to -1
+
+  public int getDirectionPressed(InputEvent event) {
+    if (!isDpadDevice(event)) {
+      return -1;
+    }
+
+    // If the input event is a MotionEvent, check its hat axis values.
+    if (event instanceof MotionEvent) {
+
+      // Use the hat axis value to find the D-pad direction
+      MotionEvent motionEvent = (MotionEvent) event;
+      float xaxis = motionEvent.getAxisValue(MotionEvent.AXIS_HAT_X);
+      float yaxis = motionEvent.getAxisValue(MotionEvent.AXIS_HAT_Y);
+
+      // Check if the AXIS_HAT_X value is -1 or 1, and set the D-pad
+      // LEFT and RIGHT direction accordingly.
+      if (Float.compare(xaxis, -1.0f) == 0) {
+        directionPressed =  Dpad.LEFT;
+      } else if (Float.compare(xaxis, 1.0f) == 0) {
+        directionPressed =  Dpad.RIGHT;
+      }
+      // Check if the AXIS_HAT_Y value is -1 or 1, and set the D-pad
+      // UP and DOWN direction accordingly.
+      else if (Float.compare(yaxis, -1.0f) == 0) {
+        directionPressed =  Dpad.UP;
+      } else if (Float.compare(yaxis, 1.0f) == 0) {
+        directionPressed =  Dpad.DOWN;
+      }
+    }
+
+    // If the input event is a KeyEvent, check its key code.
+    else if (event instanceof KeyEvent) {
+
+      // Use the key code to find the D-pad direction.
+      KeyEvent keyEvent = (KeyEvent) event;
+      if (keyEvent.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT) {
+        directionPressed = Dpad.LEFT;
+      } else if (keyEvent.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT) {
+        directionPressed = Dpad.RIGHT;
+      } else if (keyEvent.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP) {
+        directionPressed = Dpad.UP;
+      } else if (keyEvent.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
+        directionPressed = Dpad.DOWN;
+      } else if (keyEvent.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER) {
+        directionPressed = Dpad.CENTER;
+      }
+    }
+    return directionPressed;
+  }
+
+  public static boolean isDpadDevice(InputEvent event) {
+    // Check that input comes from a device with directional pads.
+    if ((event.getSource() & InputDevice.SOURCE_DPAD)
+            != InputDevice.SOURCE_DPAD) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+}
+
+public class MainActivity extends ReactActivity implements UsbDriverService.UsbDriverStateListener, InputManager.InputDeviceListener {
+
+  public static MainActivity instance;
+  private boolean autoPipEnabled = false;
+
+  private final Vector2d inputVector = new Vector2d();
+
+  private final Object controllerIndexLock = new Object();
+  private final SparseIntArray controllerIndexByDeviceId = new SparseIntArray();
+  private final SparseBooleanArray usedControllerIndices = new SparseBooleanArray();
+
+  private static class ControllerMotionState {
+    float lastLeftTrigger = -1f;
+    float lastRightTrigger = -1f;
+    double lastLeftStickX = 999.0;
+    double lastLeftStickY = 999.0;
+    double lastRightStickX = 999.0;
+    double lastRightStickY = 999.0;
+  }
+  private final SparseArray<ControllerMotionState> motionStateByDeviceId = new SparseArray<>();
+
+  private InputManager inputManager;
+  // Menu gamepad navigation state
+  private String lastMenuNavAction = null;
+  private long lastMenuNavTime = 0;
+  private boolean isMenuNavInInitialRepeat = false;
+
+  private final BroadcastReceiver menuNavReceiver = new BroadcastReceiver() {
+    @Override
+    public void onReceive(Context context, Intent intent) {
+      if ("com.xstreaming.ACTION_MENU_NAV".equals(intent.getAction())) {
+        String action = intent.getStringExtra("action");
+        if (action != null) {
+          emitMenuNavigation(action);
+        }
+      }
+    }
+  };
+
+  /**
+   * Returns the name of the main component registered from JavaScript. This is used to schedule
+   * rendering of the component.
+   */
+  @Override
+  protected String getMainComponentName() {
+    return "xstreaming";
+  }
+
+  private static boolean hasJoystickAxes(InputDevice device) {
+    if (device == null) return false;
+    return (device.getSources() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
+            getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_X) != null &&
+            getMotionRangeForJoystickAxis(device, MotionEvent.AXIS_Y) != null;
+  }
+
+  private static boolean hasGamepadButtons(InputDevice device) {
+    if (device == null) return false;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+      boolean[] keys = device.hasKeys(
+          KeyEvent.KEYCODE_BUTTON_A,
+          KeyEvent.KEYCODE_BUTTON_B,
+          KeyEvent.KEYCODE_BUTTON_X,
+          KeyEvent.KEYCODE_BUTTON_Y
+      );
+      return (keys[0] || keys[1]) && (keys[2] || keys[3]);
+    }
+    return false;
+  }
+
+  private boolean isGameControllerDevice(InputDevice device) {
+    if (device == null || device.isVirtual()) {
+      return false;
+    }
+    int sources = device.getSources();
+    boolean hasGamepadSource =
+        ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) ||
+        ((sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK);
+
+    if (!hasGamepadSource) {
+      return false;
+    }
+
+    return hasJoystickAxes(device) || hasGamepadButtons(device);
+  }
+
+  private int allocateControllerIndexLocked() {
+    for (int i = 0; i < 4; i++) {
+      if (!usedControllerIndices.get(i, false)) {
+        usedControllerIndices.put(i, true);
+        return i;
+      }
+    }
+    return 0;
+  }
+
+  private int getOrAssignControllerIndex(int deviceId) {
+    if (deviceId < 0) {
+      return -1;
+    }
+    synchronized (controllerIndexLock) {
+      int existing = controllerIndexByDeviceId.get(deviceId, -1);
+      if (existing >= 0) {
+        return existing;
+      }
+      int index = allocateControllerIndexLocked();
+      controllerIndexByDeviceId.put(deviceId, index);
+      return index;
+    }
+  }
+
+  private void releaseControllerIndex(int deviceId) {
+    if (deviceId < 0) {
+      return;
+    }
+    synchronized (controllerIndexLock) {
+      int index = controllerIndexByDeviceId.get(deviceId, -1);
+      if (index >= 0) {
+        controllerIndexByDeviceId.delete(deviceId);
+        usedControllerIndices.delete(index);
+      }
+      motionStateByDeviceId.remove(deviceId);
+    }
+  }
+
+  private void putControllerInfo(WritableMap params, InputEvent event) {
+    int deviceId = event != null ? event.getDeviceId() : -1;
+    InputDevice device = event != null ? event.getDevice() : null;
+
+    params.putInt("deviceId", deviceId);
+    if (isGameControllerDevice(device)) {
+      params.putInt("gamepadIndex", getOrAssignControllerIndex(deviceId));
+    } else {
+      params.putInt("gamepadIndex", -1);
+    }
+  }
+
+  private void handleSendDpadDownEvent(InputEvent event, List<Integer> keyCodes) {
+    WritableMap params = Arguments.createMap();
+    WritableArray dpadList = Arguments.createArray();
+    for (Integer code : keyCodes) {
+      dpadList.pushInt(code);
+    }
+
+    int primaryCode = keyCodes.isEmpty() ? -1 : keyCodes.get(0);
+    params.putInt("dpadIdx", primaryCode);
+    params.putArray("dpadIdxList", dpadList);
+    if (event != null) {
+      putControllerInfo(params, event);
+    }
+    sendEvent("onDpadKeyDown", params);
+  }
+
+  private void handleSendDpadDownEvent(InputEvent event, int keyCode) {
+    List<Integer> keyCodes = new ArrayList<>();
+    keyCodes.add(keyCode);
+    handleSendDpadDownEvent(event, keyCodes);
+  }
+
+  private void handleSendDpadUpEvent(InputEvent event) {
+    WritableMap params = Arguments.createMap();
+    WritableArray dpadList = Arguments.createArray();
+    params.putInt("dpadIdx", -1);
+    params.putArray("dpadIdxList", dpadList);
+    if (event != null) {
+      putControllerInfo(params, event);
+    }
+    sendEvent("onDpadKeyUp", params);
+  }
+
+  private int handleRemapping(int keyCode, KeyEvent event, String type) {
+    InputDevice inputDevice = event.getDevice();
+    // Joycon left
+    if (inputDevice.getVendorId() == 0x057e && inputDevice.getProductId() == 0x2006) {
+      switch (event.getScanCode())
+      {
+        case 546:
+          if (type.equals("down")) {
+            handleSendDpadDownEvent(event, KeyEvent.KEYCODE_DPAD_LEFT);
+          } else {
+            handleSendDpadUpEvent(event);
+          }
+          return KeyEvent.KEYCODE_DPAD_LEFT;
+        case 547:
+          if (type.equals("down")) {
+            handleSendDpadDownEvent(event, KeyEvent.KEYCODE_DPAD_RIGHT);
+          } else {
+            handleSendDpadUpEvent(event);
+          }
+          return KeyEvent.KEYCODE_DPAD_RIGHT;
+        case 544:
+          if (type.equals("down")) {
+            handleSendDpadDownEvent(event, KeyEvent.KEYCODE_DPAD_UP);
+          } else {
+            handleSendDpadUpEvent(event);
+          }
+          return KeyEvent.KEYCODE_DPAD_UP;
+        case 545:
+          if (type.equals("down")) {
+            handleSendDpadDownEvent(event, KeyEvent.KEYCODE_DPAD_DOWN);
+          } else {
+            handleSendDpadUpEvent(event);
+          }
+          return KeyEvent.KEYCODE_DPAD_DOWN;
+        case 309: // screenshot
+          return KeyEvent.KEYCODE_BUTTON_MODE;
+        case 310:
+          return KeyEvent.KEYCODE_BUTTON_L1;
+        case 312:
+          return KeyEvent.KEYCODE_BUTTON_L2;
+        case 314:
+          return KeyEvent.KEYCODE_BUTTON_SELECT;
+        case 317:
+          return KeyEvent.KEYCODE_BUTTON_THUMBL;
+      }
+    }
+    // Joycon right
+    if (inputDevice.getVendorId() == 0x057e && inputDevice.getProductId() == 0x2007) {
+      switch (event.getScanCode())
+      {
+        case 307:
+          return KeyEvent.KEYCODE_BUTTON_Y;
+        case 308:
+          return KeyEvent.KEYCODE_BUTTON_X;
+        case 304:
+          return KeyEvent.KEYCODE_BUTTON_A;
+        case 305:
+          return KeyEvent.KEYCODE_BUTTON_B;
+        case 311:
+          return KeyEvent.KEYCODE_BUTTON_R1;
+        case 313:
+          return KeyEvent.KEYCODE_BUTTON_R2;
+        case 315:
+          return KeyEvent.KEYCODE_BUTTON_START;
+        case 316:
+          return KeyEvent.KEYCODE_BUTTON_MODE;
+        case 318:
+          return KeyEvent.KEYCODE_BUTTON_THUMBR;
+      }
+    }
+    return keyCode;
+  }
+
+  private long lastEmitMenuNavTime = 0;
+  private String lastEmitMenuNavAction = null;
+
+  private synchronized void emitMenuNavigation(String action) {
+    long now = SystemClock.uptimeMillis();
+    // Debounce identical navigation actions within 180ms to prevent duplicate dispatch
+    // from physical gamepads which emit both MotionEvent (AXIS_HAT_X/Y) and KeyEvent (DPAD)
+    if (action.equals(lastEmitMenuNavAction) && (now - lastEmitMenuNavTime < 180)) {
+      return;
+    }
+    // Prevent micro-bursts or accidental bounce within 80ms
+    if (now - lastEmitMenuNavTime < 80) {
+      return;
+    }
+    lastEmitMenuNavAction = action;
+    lastEmitMenuNavTime = now;
+
+    WritableMap params = Arguments.createMap();
+    params.putString("action", action);
+    sendEvent("onMenuNavigation", params);
+  }
+
+  private boolean handleMenuNavigationMotion(MotionEvent event) {
+    float hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+    float hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+
+    float stickX = event.getAxisValue(MotionEvent.AXIS_X);
+    float stickY = event.getAxisValue(MotionEvent.AXIS_Y);
+
+    float navX = Math.abs(hatX) > 0.5f ? hatX : (Math.abs(stickX) > 0.5f ? stickX : 0f);
+    float navY = Math.abs(hatY) > 0.5f ? hatY : (Math.abs(stickY) > 0.5f ? stickY : 0f);
+
+    String currentAction = null;
+    if (Math.abs(navX) > 0.5f || Math.abs(navY) > 0.5f) {
+      if (Math.abs(navX) > Math.abs(navY)) {
+        currentAction = (navX > 0) ? "right" : "left";
+      } else {
+        currentAction = (navY > 0) ? "down" : "up";
+      }
+    }
+
+    long now = SystemClock.uptimeMillis();
+    if (currentAction == null) {
+      // Released back into deadzone threshold (< 0.3f)
+      if (Math.abs(hatX) < 0.3f && Math.abs(hatY) < 0.3f &&
+          Math.abs(stickX) < 0.3f && Math.abs(stickY) < 0.3f) {
+        lastMenuNavAction = null;
+        lastMenuNavTime = 0;
+        isMenuNavInInitialRepeat = false;
+      }
+      return false;
+    }
+
+    if (!currentAction.equals(lastMenuNavAction)) {
+      lastMenuNavAction = currentAction;
+      lastMenuNavTime = now;
+      isMenuNavInInitialRepeat = true;
+      emitMenuNavigation(currentAction);
+      return true;
+    } else {
+      long elapsed = now - lastMenuNavTime;
+      long requiredDelay = isMenuNavInInitialRepeat ? 350 : 150;
+      if (elapsed >= requiredDelay) {
+        lastMenuNavTime = now;
+        isMenuNavInInitialRepeat = false;
+        emitMenuNavigation(currentAction);
+        return true;
+      }
+      return true;
+    }
+  }
+
+  @Override
+  public boolean dispatchKeyEvent(KeyEvent event) {
+    String currentScreen = GamepadManager.getCurrentScreen();
+    if (!currentScreen.equals("stream")) {
+      if (currentScreen.equals("login")) {
+        // On login screen (WebView), only handle game controller Back button (BUTTON_B).
+        // Do NOT consume DPAD, ENTER, or normal keys so that the WebView and soft keyboard can receive them.
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
+          if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            emitMenuNavigation("back");
+          }
+          return true;
+        }
+        return super.dispatchKeyEvent(event);
+      }
+
+      int keyCode = event.getKeyCode();
+      int action = event.getAction();
+
+      String navAction = null;
+      switch (keyCode) {
+        case KeyEvent.KEYCODE_DPAD_UP:
+          navAction = "up";
+          break;
+        case KeyEvent.KEYCODE_DPAD_DOWN:
+          navAction = "down";
+          break;
+        case KeyEvent.KEYCODE_DPAD_LEFT:
+          navAction = "left";
+          break;
+        case KeyEvent.KEYCODE_DPAD_RIGHT:
+          navAction = "right";
+          break;
+        case KeyEvent.KEYCODE_DPAD_CENTER:
+        case KeyEvent.KEYCODE_ENTER:
+        case KeyEvent.KEYCODE_BUTTON_A:
+          navAction = "select";
+          break;
+        case KeyEvent.KEYCODE_BUTTON_B:
+          navAction = "back";
+          break;
+        case KeyEvent.KEYCODE_BUTTON_X:
+          navAction = "x";
+          break;
+        case KeyEvent.KEYCODE_BUTTON_Y:
+          navAction = "y";
+          break;
+      }
+
+      if (navAction != null) {
+        if (action == KeyEvent.ACTION_DOWN) {
+          if (event.getRepeatCount() > 0) {
+            long now = SystemClock.uptimeMillis();
+            if (now - lastEmitMenuNavTime < 220) {
+              return true;
+            }
+          }
+          emitMenuNavigation(navAction);
+        }
+        return true;
+      }
+    }
+
+    return super.dispatchKeyEvent(event);
+  }
+
+  @Override
+  public boolean onKeyDown(int keyCode, KeyEvent event) {
+    String currentScreen = GamepadManager.getCurrentScreen();
+//    Log.d("MainActivity1", "currentScreen:" + currentScreen);
+
+    if (!currentScreen.equals("stream")) {
+      return super.onKeyDown(keyCode, event);
+    }
+    if (SdlGamepadManager.isActive() && SdlGamepadManager.handleKeyEvent(event)) {
+      return true;
+    }
+    if (((event.getSource() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+        || ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
+        || KeyEvent.isGamepadButton(keyCode)) {
+      int finalKeyCode = handleRemapping(keyCode, event, "down");
+      WritableMap params = Arguments.createMap();
+      params.putInt("keyCode", finalKeyCode);
+      putControllerInfo(params, event);
+//      Log.d("MainActivity1", "keyCode down:" + keyCode);
+      sendEvent("onGamepadKeyDown", params);
+      return true;
+    }
+    return super.onKeyDown(keyCode, event);
+  }
+  @Override
+  public boolean onKeyUp(int keyCode, KeyEvent event) {
+    String currentScreen = GamepadManager.getCurrentScreen();
+
+    if (!currentScreen.equals("stream")) {
+      return super.onKeyUp(keyCode, event);
+    }
+    if (SdlGamepadManager.isActive() && SdlGamepadManager.handleKeyEvent(event)) {
+      return true;
+    }
+    if (((event.getSource() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+        || ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
+        || KeyEvent.isGamepadButton(keyCode)) {
+      int finalKeyCode = handleRemapping(keyCode, event, "up");
+      WritableMap params = Arguments.createMap();
+      params.putInt("keyCode", finalKeyCode);
+      putControllerInfo(params, event);
+//      Log.d("MainActivity1", "keyCode up:" + params);
+      sendEvent("onGamepadKeyUp", params);
+      return true;
+    }
+    return super.onKeyUp(keyCode, event);
+  }
+
+  private static InputDevice.MotionRange getMotionRangeForJoystickAxis(InputDevice dev, int axis) {
+    InputDevice.MotionRange range;
+
+    // First get the axis for SOURCE_JOYSTICK
+    range = dev.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK);
+    if (range == null) {
+      // Now try the axis for SOURCE_GAMEPAD
+      range = dev.getMotionRange(axis, InputDevice.SOURCE_GAMEPAD);
+    }
+
+    return range;
+  }
+
+  private Vector2d populateCachedVector(float x, float y) {
+    // Reinitialize our cached Vector2d object
+    inputVector.initialize(x, y);
+    return inputVector;
+  }
+
+  private void handleDeadZone(Vector2d stickVector, float deadzoneRadius) {
+    if (stickVector.getMagnitude() <= deadzoneRadius) {
+      // Deadzone
+      stickVector.initialize(0, 0);
+    }
+
+    // We're not normalizing here because we let the computer handle the deadzones.
+    // Normalizing can make the deadzones larger than they should be after the computer also
+    // evaluates the deadzone.
+  }
+
+  @Override
+  public boolean onGenericMotionEvent(MotionEvent event) {
+    InputDevice inputDevice = event.getDevice();
+
+    String currentScreen = GamepadManager.getCurrentScreen();
+
+    if (!currentScreen.equals("stream")) {
+      if (currentScreen.equals("login")) {
+        return super.onGenericMotionEvent(event);
+      }
+      if (handleMenuNavigationMotion(event)) {
+        return true;
+      }
+      return super.onGenericMotionEvent(event);
+    }
+    if (SdlGamepadManager.isActive() && SdlGamepadManager.handleMotionEvent(event)) {
+      return true;
+    }
+
+    // DPAD
+    if (Dpad.isDpadDevice(event) && event instanceof MotionEvent) {
+      MotionEvent motionEvent = (MotionEvent) event;
+      float xaxis = motionEvent.getAxisValue(MotionEvent.AXIS_HAT_X);
+      float yaxis = motionEvent.getAxisValue(MotionEvent.AXIS_HAT_Y);
+      List<Integer> pressedDirections = new ArrayList<>();
+
+      if (Float.compare(xaxis, -1.0f) == 0) {
+        pressedDirections.add(KeyEvent.KEYCODE_DPAD_LEFT);
+      } else if (Float.compare(xaxis, 1.0f) == 0) {
+        pressedDirections.add(KeyEvent.KEYCODE_DPAD_RIGHT);
+      }
+
+      if (Float.compare(yaxis, -1.0f) == 0) {
+        pressedDirections.add(KeyEvent.KEYCODE_DPAD_UP);
+      } else if (Float.compare(yaxis, 1.0f) == 0) {
+        pressedDirections.add(KeyEvent.KEYCODE_DPAD_DOWN);
+      }
+
+      if (!pressedDirections.isEmpty()) {
+        Log.d("MainActivity1", "DPAD press:" + pressedDirections);
+        handleSendDpadDownEvent(event, pressedDirections);
+      } else {
+        handleSendDpadUpEvent(event);
+      }
+    }
+
+    // Trigger
+    if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) ==
+            InputDevice.SOURCE_JOYSTICK &&
+            event.getAction() == MotionEvent.ACTION_MOVE) {
+
+      InputDevice.MotionRange leftTriggerRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_LTRIGGER);
+      InputDevice.MotionRange rightTriggerRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RTRIGGER);
+      InputDevice.MotionRange brakeRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_BRAKE);
+      InputDevice.MotionRange gasRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_GAS);
+      InputDevice.MotionRange throttleRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_THROTTLE);
+
+      // Left Trigger
+      float lTrigger = 0;
+      // Right Trigger
+      float rTrigger = 0;
+      if (leftTriggerRange != null && rightTriggerRange != null)
+      {
+        // Some controllers use LTRIGGER and RTRIGGER (like Ouya)
+        lTrigger = event.getAxisValue(MotionEvent.AXIS_LTRIGGER);
+        rTrigger = event.getAxisValue(MotionEvent.AXIS_RTRIGGER);
+      }
+      else if (brakeRange != null && gasRange != null)
+      {
+        // Others use GAS and BRAKE (like Moga)
+        lTrigger = event.getAxisValue(MotionEvent.AXIS_BRAKE);
+        rTrigger = event.getAxisValue(MotionEvent.AXIS_GAS);
+      }
+      else if (brakeRange != null && throttleRange != null)
+      {
+        // Others use THROTTLE and BRAKE (like Xiaomi)
+        lTrigger = event.getAxisValue(MotionEvent.AXIS_BRAKE);
+        rTrigger = event.getAxisValue(MotionEvent.AXIS_THROTTLE);
+      }
+      else
+      {
+        InputDevice.MotionRange rxRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RX);
+        InputDevice.MotionRange ryRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RY);
+        String devName = inputDevice.getName();
+        if (rxRange != null && ryRange != null && devName != null) {
+          boolean isNonStandardDualShock4 = false;
+          if (inputDevice.getVendorId() == 0x054c) { // Sony
+            if (inputDevice.hasKeys(KeyEvent.KEYCODE_BUTTON_C)[0]) {
+              Log.d("MainActivity1", "Detected non-standard DualShock 4 mapping");
+              isNonStandardDualShock4 = true;
+            }
+          }
+
+          if (isNonStandardDualShock4) {
+            // The old DS4 driver uses RX and RY for triggers
+            lTrigger = event.getAxisValue(MotionEvent.AXIS_RX);
+            rTrigger = event.getAxisValue(MotionEvent.AXIS_RY);
+          }
+          else {
+            // While it's likely that Z and RZ are triggers, we may have digital trigger buttons
+            // instead. We must check that we actually have Z and RZ axes before assigning them.
+            if (getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_Z) != null &&
+                    getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RZ) != null) {
+              lTrigger = event.getAxisValue(MotionEvent.AXIS_Z);
+              rTrigger = event.getAxisValue(MotionEvent.AXIS_RZ);
+            }
+          }
+        }
+      }
+
+      int deviceId = event.getDeviceId();
+      ControllerMotionState motionState;
+      synchronized (controllerIndexLock) {
+        motionState = motionStateByDeviceId.get(deviceId);
+        if (motionState == null) {
+          motionState = new ControllerMotionState();
+          motionStateByDeviceId.put(deviceId, motionState);
+        }
+      }
+
+      boolean triggerChanged =
+          Math.abs(lTrigger - motionState.lastLeftTrigger) >= 0.005f ||
+          (lTrigger == 0f && motionState.lastLeftTrigger != 0f) ||
+          Math.abs(rTrigger - motionState.lastRightTrigger) >= 0.005f ||
+          (rTrigger == 0f && motionState.lastRightTrigger != 0f);
+
+      if (triggerChanged) {
+        motionState.lastLeftTrigger = lTrigger;
+        motionState.lastRightTrigger = rTrigger;
+        WritableMap triggerParams = Arguments.createMap();
+        triggerParams.putDouble("leftTrigger", lTrigger);
+        triggerParams.putDouble("rightTrigger", rTrigger);
+        putControllerInfo(triggerParams, event);
+        sendEvent("onTrigger", triggerParams);
+      }
+
+      int deadzonePercentage = 10;
+      int leftStickXAxis = MotionEvent.AXIS_X;
+      int leftStickYAxis = MotionEvent.AXIS_Y;
+      int rightStickXAxis = -1;
+      int rightStickYAxis = -1;
+      double stickDeadzone = (double)deadzonePercentage / 100.0;
+      float leftStickDeadzoneRadius = (float) stickDeadzone;
+      float rightStickDeadzoneRadius = (float) stickDeadzone;
+
+      InputDevice.MotionRange zRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_Z);
+      InputDevice.MotionRange rzRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RZ);
+
+      if (zRange != null && rzRange != null) {
+        rightStickXAxis = MotionEvent.AXIS_Z;
+        rightStickYAxis = MotionEvent.AXIS_RZ;
+      } else {
+        // Try RX and RY now
+        InputDevice.MotionRange rxRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RX);
+        InputDevice.MotionRange ryRange = getMotionRangeForJoystickAxis(inputDevice, MotionEvent.AXIS_RY);
+
+        if (rxRange != null && ryRange != null) {
+          rightStickXAxis = MotionEvent.AXIS_RX;
+          rightStickYAxis = MotionEvent.AXIS_RY;
+        }
+      }
+
+      float lsX = 0, lsY = 0, rsX = 0, rsY = 0, rt = 0, lt = 0, hatX = 0, hatY = 0;
+      lsX = event.getAxisValue(leftStickXAxis);
+      lsY = event.getAxisValue(leftStickYAxis);
+
+      rsX = event.getAxisValue(rightStickXAxis);
+      rsY = event.getAxisValue(rightStickYAxis);
+
+      // Left stick
+      Vector2d leftStickVector = populateCachedVector(lsX, lsY);
+      handleDeadZone(leftStickVector, leftStickDeadzoneRadius);
+
+      double leftStickX = leftStickVector.getX();
+      double leftStickY = leftStickVector.getY();
+
+      if(leftStickX > 1) {
+        leftStickX = 1;
+      }
+      if(leftStickX < -1) {
+        leftStickX = -1;
+      }
+      if(leftStickY > 1) {
+        leftStickY = 1;
+      }
+      if(leftStickY < -1) {
+        leftStickY = -1;
+      }
+
+//      Log.d("MainActivity1", "left axisX:" + leftStickX);
+//      Log.d("MainActivity1", "left axisY:" + leftStickY);
+
+      // Right stick
+      Vector2d rightStickVector = populateCachedVector(rsX, rsY);
+
+      handleDeadZone(rightStickVector, rightStickDeadzoneRadius);
+
+      double rightStickX = rightStickVector.getX();
+      double rightStickY = rightStickVector.getY();
+
+      if(rightStickX > 1) {
+        rightStickX = 1;
+      }
+      if(rightStickX < -1) {
+        rightStickX = -1;
+      }
+      if(rightStickY > 1) {
+        rightStickY = 1;
+      }
+      if(rightStickY < -1) {
+        rightStickY = -1;
+      }
+
+      boolean stickChanged =
+          Math.abs(leftStickX - motionState.lastLeftStickX) >= 0.005 ||
+          Math.abs(leftStickY - motionState.lastLeftStickY) >= 0.005 ||
+          Math.abs(rightStickX - motionState.lastRightStickX) >= 0.005 ||
+          Math.abs(rightStickY - motionState.lastRightStickY) >= 0.005 ||
+          (leftStickX == 0.0 && leftStickY == 0.0 && (motionState.lastLeftStickX != 0.0 || motionState.lastLeftStickY != 0.0)) ||
+          (rightStickX == 0.0 && rightStickY == 0.0 && (motionState.lastRightStickX != 0.0 || motionState.lastRightStickY != 0.0));
+
+      if (stickChanged) {
+        motionState.lastLeftStickX = leftStickX;
+        motionState.lastLeftStickY = leftStickY;
+        motionState.lastRightStickX = rightStickX;
+        motionState.lastRightStickY = rightStickY;
+
+        WritableMap stickParams = Arguments.createMap();
+        stickParams.putDouble("leftStickX", leftStickX);
+        stickParams.putDouble("leftStickY", leftStickY);
+        stickParams.putDouble("rightStickX", rightStickX);
+        stickParams.putDouble("rightStickY", rightStickY);
+        putControllerInfo(stickParams, event);
+        sendEvent("onStickMove", stickParams);
+      }
+    }
+    return true;
+  }
+
+  public void sendEvent(String eventName, WritableMap params) {
+//    ReactContext reactContext = (ReactContext) getApplicationContext();
+    ReactContext reactContext = getReactInstanceManager().getCurrentReactContext();
+
+    if (reactContext != null) {
+      reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit(eventName, params);
+    }
+  }
+
+  @Override
+  protected void onUserLeaveHint() {
+    if (autoPipEnabled) {
+      enterPipModeIfPossible();
+    }
+    super.onUserLeaveHint();
+  }
+
+  public void setAutoPipEnabled(boolean enabled) {
+    if (isTvDevice()) {
+      autoPipEnabled = false;
+      return;
+    }
+    autoPipEnabled = enabled;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && supportsPipMode()) {
+      try {
+        setPictureInPictureParams(createPipParams(autoPipEnabled));
+      } catch (RuntimeException e) {
+        Log.w("MainActivity", "Failed to update PiP params", e);
+      }
+    }
+  }
+
+  public boolean enterPipModeIfPossible() {
+    if (isTvDevice() || Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !supportsPipMode()) {
+      return false;
+    }
+    if (isInPictureInPictureMode()) {
+      return true;
+    }
+    try {
+      return enterPictureInPictureMode(createPipParams(autoPipEnabled));
+    } catch (RuntimeException e) {
+      Log.w("MainActivity", "Failed to enter PiP mode", e);
+      return false;
+    }
+  }
+
+  private boolean isTvDevice() {
+    return getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+            || getPackageManager().hasSystemFeature("android.hardware.type.television");
+  }
+
+  private boolean supportsPipMode() {
+    if (isTvDevice()) {
+      return false;
+    }
+    return getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+  }
+
+  private PictureInPictureParams createPipParams(boolean autoEnterEnabled) {
+    PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
+            .setAspectRatio(new Rational(16, 9));
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      builder.setAutoEnterEnabled(autoEnterEnabled);
+      builder.setSeamlessResizeEnabled(true);
+    }
+    View contentView = findViewById(android.R.id.content);
+    if (contentView != null && contentView.getWidth() > 0 && contentView.getHeight() > 0) {
+      Rect sourceRect = new Rect();
+      contentView.getGlobalVisibleRect(sourceRect);
+      builder.setSourceRectHint(sourceRect);
+    }
+    return builder.build();
+  }
+
+  @Override
+  public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+    super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+    if (!isInPictureInPictureMode && autoPipEnabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      try {
+        setPictureInPictureParams(createPipParams(true));
+      } catch (RuntimeException ignored) {
+      }
+    }
+    WritableMap params = Arguments.createMap();
+    params.putBoolean("isInPictureInPictureMode", isInPictureInPictureMode);
+    sendEvent("pictureInPictureModeChanged", params);
+  }
+
+  public void handleRumble(short lowFreMotor, short highFreMotor) {
+    this.controllerHandler.handleRumble(lowFreMotor, highFreMotor);
+  }
+
+  public void handleRumbleTrigger(short leftTrigger, short rightTrigger) {
+    this.controllerHandler.handleRumbleTriggers(leftTrigger, rightTrigger);
+  }
+
+  public void handleSendCommand(byte[] data) {
+    this.controllerHandler.handleSendCommand(data);
+  }
+
+  private boolean connectedToUsbDriverService = false;
+  private ControllerHandler controllerHandler;
+  private final ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
+    @Override
+    public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+      UsbDriverService.UsbDriverBinder binder = (UsbDriverService.UsbDriverBinder) iBinder;
+      binder.setListener(controllerHandler);
+      binder.setStateListener(MainActivity.this);
+      binder.start();
+      connectedToUsbDriverService = true;
+    }
+
+    @Override
+    public void onServiceDisconnected(ComponentName componentName) {
+      connectedToUsbDriverService = false;
+    }
+  };
+
+  @Override
+  public void onUsbPermissionPromptStarting() {
+  }
+
+  @Override
+  public void onUsbPermissionPromptCompleted() {
+  }
+
+  @Override
+  protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(null);
+
+    instance = this;
+
+    controllerHandler = new ControllerHandler(this);
+
+    inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
+
+    // Start the USB driver
+    bindService(new Intent(this, UsbDriverService.class),
+            usbDriverServiceConnection, Service.BIND_AUTO_CREATE);
+
+    getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+    try {
+      IntentFilter navFilter = new IntentFilter("com.xstreaming.ACTION_MENU_NAV");
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        registerReceiver(menuNavReceiver, navFilter, Context.RECEIVER_EXPORTED);
+      } else {
+        registerReceiver(menuNavReceiver, navFilter);
+      }
+    } catch (Exception e) {
+      Log.w("MainActivity", "Failed to register menuNavReceiver", e);
+    }
+  }
+
+  @Override
+  protected void onDestroy() {
+    try {
+      if (com.xstreaming.recording.GameRecorder.getInstance().isRecording()) {
+        com.xstreaming.recording.GameRecorder.getInstance().stopRecording(null);
+      }
+      unregisterReceiver(menuNavReceiver);
+    } catch (Exception ignored) {}
+    super.onDestroy();
+  }
+
+  @Override
+  public void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+
+    if (intent != null && intent.hasExtra("menuNav")) {
+      String action = intent.getStringExtra("menuNav");
+      if (action != null) {
+        emitMenuNavigation(action);
+      }
+    }
+
+    WritableMap shortcutParams = TitleShortcutManagerModule.createShortcutParams(intent);
+    if (shortcutParams != null) {
+      sendEvent(TitleShortcutManagerModule.EVENT_OPEN_TITLE_SHORTCUT, shortcutParams);
+    }
+  }
+
+  @Override
+  protected void onResume() {
+    super.onResume();
+
+    if (inputManager != null) {
+      inputManager.registerInputDeviceListener(this, null);
+    }
+
+    // Prime indices for already-connected controllers so index assignment
+    // doesn't depend on which device happens to send the first event.
+    int[] deviceIds = InputDevice.getDeviceIds();
+    for (int deviceId : deviceIds) {
+      InputDevice device = InputDevice.getDevice(deviceId);
+      if (isGameControllerDevice(device)) {
+        getOrAssignControllerIndex(deviceId);
+      }
+    }
+    checkAndEmitGamepadConnection();
+  }
+
+  private void checkAndEmitGamepadConnection() {
+    boolean hasGamepad = false;
+    try {
+      int[] ids = InputDevice.getDeviceIds();
+      for (int id : ids) {
+        InputDevice dev = InputDevice.getDevice(id);
+        if (dev != null && isGameControllerDevice(dev)) {
+          hasGamepad = true;
+          break;
+        }
+      }
+    } catch (Exception ignored) {}
+    WritableMap params = Arguments.createMap();
+    params.putBoolean("hasGamepad", hasGamepad);
+    sendEvent("onGamepadConnectionChange", params);
+  }
+
+  @Override
+  protected void onPause() {
+    if (inputManager != null) {
+      inputManager.unregisterInputDeviceListener(this);
+    }
+    super.onPause();
+  }
+
+  @Override
+  public void onInputDeviceAdded(int deviceId) {
+    InputDevice device = InputDevice.getDevice(deviceId);
+    if (isGameControllerDevice(device)) {
+      getOrAssignControllerIndex(deviceId);
+    }
+    checkAndEmitGamepadConnection();
+  }
+
+  @Override
+  public void onInputDeviceRemoved(int deviceId) {
+    releaseControllerIndex(deviceId);
+    checkAndEmitGamepadConnection();
+  }
+
+  @Override
+  public void onInputDeviceChanged(int deviceId) {
+    // No-op
+  }
+
+  /**
+   * Returns the instance of the {@link ReactActivityDelegate}. Here we use a util class {@link
+   * DefaultReactActivityDelegate} which allows you to easily enable Fabric and Concurrent React
+   * (aka React 18) with two boolean flags.
+   */
+  @Override
+  protected ReactActivityDelegate createReactActivityDelegate() {
+    SplashScreen.show(this);
+    return new DefaultReactActivityDelegate(
+        this,
+        getMainComponentName(),
+        // If you opted-in for the New Architecture, we enable the Fabric Renderer.
+        DefaultNewArchitectureEntryPoint.getFabricEnabled());
+  }
+
+}
