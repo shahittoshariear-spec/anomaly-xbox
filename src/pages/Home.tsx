@@ -56,6 +56,14 @@ const {UsbRumbleManager, FullScreenManager} = NativeModules;
 
 const MSAL = 'msal';
 
+const withTimeout = <T,>(promise: Promise<T>, ms = 15000): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('Request timed out')), ms),
+    ),
+  ]);
+
 function HomeScreen({navigation, route}) {
   const {t} = useTranslation();
   const palette = useAnomalyTheme();
@@ -81,6 +89,7 @@ function HomeScreen({navigation, route}) {
   const [showMsal, setShowMsal] = React.useState(false);
   const [msalBtnLoading, setMsalBtnLoading] = React.useState(false);
   const [msalData, setMsalData] = React.useState(null);
+  const [refreshError, setRefreshError] = React.useState('');
   const [launch, setLaunch] = React.useState<{
     visible: boolean;
     routeName?: string;
@@ -90,6 +99,21 @@ function HomeScreen({navigation, route}) {
 
   // Session report modal state
   const [sessionReport, setSessionReport] = React.useState<any>(null);
+
+  // Safety net: no operation on this screen is allowed to leave the spinner up
+  // forever. If it does, clear it and explain what to check.
+  React.useEffect(() => {
+    if (!loading) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setLoading(false);
+      setRefreshError(
+        'This is taking too long. Check that the phone and the Xbox are on the same network, then tap to retry.',
+      );
+    }, 25000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   React.useEffect(() => {
     if (route?.params?.sessionReport) {
@@ -253,10 +277,10 @@ function HomeScreen({navigation, route}) {
         );
         _xHomeApiRef.current = _xHomeApi;
 
-        let _consoles: any = await _xHomeApi.getConsoles();
+        let _consoles: any = await withTimeout(_xHomeApi.getConsoles());
 
         if (!_consoles || !_consoles.length) {
-          _consoles = await webApi.getConsoles();
+          _consoles = await withTimeout(webApi.getConsoles());
         }
 
         if (_consoles && _consoles.length > 0) {
@@ -476,6 +500,7 @@ function HomeScreen({navigation, route}) {
   };
 
   const handleRefreshConsoles = async () => {
+    setRefreshError('');
     setLoading(true);
     setLoadingText(t('Loading...'));
 
@@ -484,16 +509,26 @@ function HomeScreen({navigation, route}) {
       let _consoles: any = [];
 
       if (_xHomeApiRef.current) {
-        _consoles = await _xHomeApiRef.current.getConsoles();
+        _consoles = await withTimeout(_xHomeApiRef.current.getConsoles());
       }
 
       if (!_consoles.length) {
-        _consoles = await webApi.getConsoles();
+        _consoles = await withTimeout(webApi.getConsoles());
       }
 
       if (_consoles.length > 0) {
         setConsoles(_consoles);
+        saveConsolesData({consoles: _consoles});
+      } else {
+        setRefreshError(
+          'No consoles were returned. Check that the Xbox is on, signed in and has remote features enabled.',
+        );
       }
+    } catch (e: any) {
+      log.error('Refresh consoles failed:', e);
+      setRefreshError(
+        `Could not reach Xbox: ${e?.message || String(e)}. Tap to retry.`,
+      );
     } finally {
       setLoading(false);
     }
@@ -785,15 +820,6 @@ function HomeScreen({navigation, route}) {
   };
 
   const renderContent = () => {
-    if (
-      loading &&
-      consoles.length === 0 &&
-      !showLogin &&
-      !showMsalLogin &&
-      !showMsal
-    ) {
-      return null;
-    }
     if (showLogin) {
       return <View style={styles.centerContainer}>{renderSignIn(false)}</View>;
     } else if (showMsalLogin) {
@@ -860,6 +886,29 @@ function HomeScreen({navigation, route}) {
                   : undefined
               }
             />
+
+            {!!refreshError && (
+              <Pressable
+                onPress={handleRefreshConsoles}
+                style={({pressed}) => [
+                  styles.errorBanner,
+                  {
+                    borderColor: palette.primary,
+                    backgroundColor: `${palette.primary}14`,
+                  },
+                  pressed && {opacity: 0.8},
+                ]}>
+                <MaterialCommunityIcons
+                  name="alert-circle-outline"
+                  size={20}
+                  color={palette.primary}
+                />
+                <Text
+                  style={[styles.errorText, {color: palette.text}]}>
+                  {refreshError}
+                </Text>
+              </Pressable>
+            )}
 
             {consoles.length > 0 ? (
               <View style={styles.consoleList}>
@@ -1123,6 +1172,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 12,
     marginTop: 16,
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  errorText: {
+    flex: 1,
+    marginLeft: 10,
+    fontSize: 12,
+    lineHeight: 17,
   },
   actionButtonFocused: {
     borderWidth: 2,

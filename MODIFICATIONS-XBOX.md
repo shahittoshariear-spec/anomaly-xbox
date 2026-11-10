@@ -131,3 +131,16 @@ this project is for: picking an Xbox and starting remote play.
 - Launch animation no longer restarts when the home screen re-renders, and cannot call the
   navigation callback twice.
 - Home header respects the status-bar inset instead of using a fixed 40 px padding.
+
+## v3.0.1 — connection robustness
+
+- `index.js` sets a 20-second default timeout on every axios request, so a stalled
+  connection fails and surfaces an error instead of leaving the UI on a spinner.
+- `Home`: the console list is no longer blanked while the first fetch runs; a 25-second
+  safety net clears the spinner and explains what to check; refresh errors (timeout, API
+  failure or an empty console list) are shown in a tappable banner; console fetches use a
+  15-second `withTimeout` wrapper.
+- `NativeStream`: a connection watchdog fires after 25 seconds without `CONNECTED`, shows
+  the last connection stage, and offers **Retry at 720p** (which saves `resolution: 720`
+  and restarts the stream) or **Exit**.
+- `package.json` / `build.gradle`: version 3.0.1, versionCode 3.

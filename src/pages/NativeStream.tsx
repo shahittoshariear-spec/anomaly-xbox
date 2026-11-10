@@ -2286,6 +2286,53 @@ export function NativeStreamScreenBase({
 
   const isSessionTrackerStartedRef = React.useRef(false);
 
+  // Connection watchdog: never leave the player on an endless spinner. If the
+  // stream has not reached CONNECTED after 25 seconds, offer a 720p retry (the
+  // resolution some older consoles negotiate more reliably) or a clean exit.
+  const loadingTextRef = React.useRef('');
+  loadingTextRef.current = loadingText;
+  const probeStartedAtRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!loading || connectState === CONNECTED) {
+      probeStartedAtRef.current = 0;
+      return;
+    }
+    if (!probeStartedAtRef.current) {
+      probeStartedAtRef.current = Date.now();
+    }
+    const timer = setTimeout(() => {
+      if (isRequestExit.current || isConnected.current) {
+        return;
+      }
+      probeStartedAtRef.current = 0;
+      Alert.alert(
+        t('Warning'),
+        `Could not connect to your Xbox. Last step: ${
+          loadingTextRef.current || t('Connecting...')
+        }`,
+        [
+          {text: t('Cancel'), style: 'cancel'},
+          {
+            text: 'Retry at 720p',
+            onPress: () => {
+              const current = getSettings();
+              if (current.resolution !== 720) {
+                saveSettings({...current, resolution: 720});
+              }
+              setWebrtcClient(new webRTCClient());
+            },
+          },
+          {
+            text: t('Exit'),
+            style: 'destructive',
+            onPress: () => handleExitRef.current(),
+          },
+        ],
+      );
+    }, 25000);
+    return () => clearTimeout(timer);
+  }, [loading, connectState, webrtcClient, t]);
+
   React.useEffect(() => {
     if (connectState === CONNECTED && !isSessionTrackerStartedRef.current) {
       isSessionTrackerStartedRef.current = true;

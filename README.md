@@ -20,7 +20,7 @@ Anomaly Xbox is a personal fork of [XStreaming](https://github.com/Geocld/XStrea
 rebuilt as a small standalone app for playing an Xbox console on a phone with any standard
 Android gamepad.
 
-Version 3.0.0 replaces the original full media-app interface with an Anomaly-style shell:
+Version 3.0.1 replaces the original full media-app interface with an Anomaly-style shell:
 one console list, six short settings sections and a launch animation. Cloud gaming,
 achievements, friends, the store, search and history were removed.
 
@@ -41,7 +41,7 @@ Grab the latest signed APK from the
 | | |
 |---|---|
 | Package | `app.anomaly.xbox` |
-| Version | 3.0.0 |
+| Version | 3.0.1 |
 | Minimum Android | 8.0 (API 26) |
 | ABIs | arm64-v8a, armeabi-v7a |
 | License | AGPL-3.0 |
@@ -100,7 +100,7 @@ build, and a fixed malformed upstream patch file.
 
 ## Limitations
 
-- Built and statically validated, but version 3.0.0 has not yet been tested against real
+- Built and statically validated, but version 3.0.1 has not yet been tested against real
   Xbox hardware.
 - Xbox remote play requires the console to be configured for remote features and signed in
   with the same Microsoft account.
