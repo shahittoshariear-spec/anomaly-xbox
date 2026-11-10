@@ -528,6 +528,26 @@ class webRTCClient {
 
   setGamepadState(gpState: any) {
     this._gpState = gpState;
+
+    // Queue the new state immediately instead of waiting for the next poll tick.
+    // The input channel coalesces frames produced in the same tick and drops
+    // repeats, so this does not add traffic.
+    const processor = this.getChannelProcessor('input');
+    if (!processor || typeof processor.queueGamepadStates !== 'function') {
+      return;
+    }
+
+    const states = Array.isArray(gpState)
+      ? gpState.filter((state: any) => state !== null && state !== undefined)
+      : gpState
+      ? [gpState]
+      : [];
+
+    if (states.length === 0) {
+      return;
+    }
+
+    processor.queueGamepadStates(states.map((state: any) => ({...state})));
   }
 
   getAudioVolume() {

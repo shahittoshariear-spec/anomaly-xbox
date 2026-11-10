@@ -1126,6 +1126,8 @@ export function NativeStreamScreenBase({
           syncAutoSprint(gpState, !!_settings.auto_sprint);
           gpState.RightThumbXAxis = normaliseAxis(rightStickX);
           gpState.RightThumbYAxis = normaliseAxis(rightStickY);
+
+          webrtcClient && webrtcClient.setGamepadState(gpState);
         },
       );
 
@@ -1334,6 +1336,12 @@ export function NativeStreamScreenBase({
             -1,
             Math.min(1, Number((normRy + gyroStick.current.y).toFixed(3))),
           );
+
+          if (webrtcClient) {
+            webrtcClient.setGamepadState(
+              _settings.coop && coopGpStates ? coopGpStates : targetState,
+            );
+          }
         },
       );
 
@@ -1376,6 +1384,12 @@ export function NativeStreamScreenBase({
             // Line trigger
             targetState.RightTrigger =
               event.rightTrigger >= 0.05 ? event.rightTrigger : 0;
+          }
+
+          if (webrtcClient) {
+            webrtcClient.setGamepadState(
+              _settings.coop && coopGpStates ? coopGpStates : targetState,
+            );
           }
         },
       );

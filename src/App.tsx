@@ -312,6 +312,22 @@ function App() {
   }, [settings.check_update, t]);
 
   React.useEffect(() => {
+    // Apply decoder/audio flags at startup as well as on change. Previously they
+    // were only pushed when settings were saved, so the low-latency decoder did
+    // not take effect until some unrelated setting was touched.
+    try {
+      NativeModules.AudioSettingModule?.setStereoEnabled?.(
+        !!settings.enable_stereo_audio,
+      );
+      NativeModules.AudioSettingModule?.setLowLatencyDecoderEnabled?.(
+        !!settings.native_low_latency_decoder,
+      );
+    } catch (error) {
+      // Native module is optional during development.
+    }
+  }, [settings.enable_stereo_audio, settings.native_low_latency_decoder]);
+
+  React.useEffect(() => {
     if (settings.bind_usb_device !== undefined) {
       UsbRumbleManager.setBindUsbDevice(settings.bind_usb_device);
     }

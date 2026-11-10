@@ -149,7 +149,7 @@ const defaultSettings: Settings = {
   picture_in_picture: defaultPictureInPicture,
   native_portrait_mode: false,
   native_portrait_gamepad_layout: [],
-  native_low_latency_decoder: false,
+  native_low_latency_decoder: true,
   show_virtual_gamead: false,
   virtual_gamepad_opacity: 0.7,
   custom_virtual_gamepad: '',
@@ -162,7 +162,7 @@ const defaultSettings: Settings = {
   virtual_macro_long_press_steps: DEFAULT_VIRTUAL_MACRO_LONG_STEPS,
   gamepad_maping: null,
   native_gamepad_maping: null,
-  polling_rate: 62.5,
+  polling_rate: 125,
   sensor: 0,
   sensor_type: 1,
   sensor_sensitivity_x: 15000,
@@ -195,7 +195,7 @@ const defaultSettings: Settings = {
   theme: 'dark',
   theme_primary_color: DEFAULT_THEME_PRIMARY_COLOR,
   anomaly_theme: 'electric-violet',
-  settings_schema: 2,
+  settings_schema: 4,
   show_menu: false,
   fsr: false,
   smart_frame_generation: false,
@@ -281,6 +281,22 @@ export const getSettings = (): Settings => {
         merged.video_format = 'Zoom';
       }
       merged.settings_schema = 2;
+      storage.set(STORE_KEY, JSON.stringify(merged));
+    }
+    // Raise the legacy 62.5 Hz controller poll to 125 Hz. Input is now sent the
+    // moment it changes, so this only affects the keepalive and the nano engine.
+    if (merged.settings_schema < 3) {
+      if (merged.polling_rate === 62.5) {
+        merged.polling_rate = 125;
+      }
+      merged.settings_schema = 3;
+      storage.set(STORE_KEY, JSON.stringify(merged));
+    }
+    // Enable the low-latency MediaCodec path. It trims the decoder's internal
+    // buffering, which is the largest remaining app-side delay after input.
+    if (merged.settings_schema < 4) {
+      merged.native_low_latency_decoder = true;
+      merged.settings_schema = 4;
       storage.set(STORE_KEY, JSON.stringify(merged));
     }
     if (Platform.isTV) {

@@ -750,6 +750,7 @@ function NanoStreamScreen({navigation, route}: any) {
             x: normaliseAxis(Number(event?.rightStickX || 0)),
             y: normaliseAxis(Number(event?.rightStickY || 0)),
           };
+          sendGamepadState();
         },
       );
 
@@ -778,6 +779,8 @@ function NanoStreamScreen({navigation, route}: any) {
             inputStateRef.current.buttons.RightTrigger =
               event?.rightTrigger >= 0.05 ? Number(event.rightTrigger) : 0;
           }
+
+          sendGamepadState();
         },
       );
     }

@@ -78,12 +78,12 @@ android {
 
     namespace "com.xstreaming"
     defaultConfig {
-        versionCode 3
+        versionCode 4
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
 //        applicationId "com.gamepass"
 //        versionCode 1999999999
-        versionName "3.0.1"
+        versionName "3.1.0"
         ndk {
             abiFilters(*xstreamingTargetAbis)
         }

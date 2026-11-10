@@ -40,6 +40,7 @@ const gamepad = [
     description: t('Modify controller response rate'),
     data: [
       {value: 250, text: '250HZ'},
+      {value: 125, text: '125HZ'},
       {value: 83.33, text: '83.33HZ'},
       {value: 62.5, text: '62.5HZ'},
       {value: 50, text: '50HZ'},

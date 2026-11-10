@@ -81,6 +81,8 @@ export default class InputChannel extends BaseChannel {
   _gamepadFrames: Array<InputFrame> = [];
   _pointerFrames: Array<PointerFrame> = [];
   _inputInterval: any;
+  _flushTimer: any;
+  _lastGamepadSignature = '';
   _serverHeight = 1080;
   _serverWidth = 1920;
 
@@ -117,29 +119,50 @@ export default class InputChannel extends BaseChannel {
 
     const pollRate = this.getClient()._polling_rate || 62.5;
 
+    // Low-rate keepalive for metadata and any queued state. Gamepad and pointer
+    // changes are flushed immediately by scheduleFlush() below, so the poll rate
+    // no longer adds latency to input.
     this._inputInterval = setInterval(() => {
-      const metadataQueue = this.getMetadataQueue();
-      const gamepadQueue = this.getGamepadQueue();
-      const pointerQueue = this.getPointerQueue();
+      this.flushInput();
+    }, 1000 / pollRate);
+  }
 
-      if (
-        metadataQueue.length !== 0 ||
-        gamepadQueue.length !== 0 ||
-        pointerQueue.length !== 0
-      ) {
-        this._inputSequenceNum++;
-        const packet = new InputPacket(this._inputSequenceNum);
-        packet.setData(
-          metadataQueue,
-          gamepadQueue,
-          pointerQueue,
-          this._serverWidth,
-          this._serverHeight,
-        );
+  /** Send any queued input frames right now. */
+  flushInput() {
+    const metadataQueue = this.getMetadataQueue();
+    const gamepadQueue = this.getGamepadQueue();
+    const pointerQueue = this.getPointerQueue();
 
-        this.send(packet.toBuffer());
-      }
-    }, 1000 / pollRate); // 16 ms = 1 frame (1000/60)
+    if (
+      metadataQueue.length === 0 &&
+      gamepadQueue.length === 0 &&
+      pointerQueue.length === 0
+    ) {
+      return;
+    }
+
+    this._inputSequenceNum++;
+    const packet = new InputPacket(this._inputSequenceNum);
+    packet.setData(
+      metadataQueue,
+      gamepadQueue,
+      pointerQueue,
+      this._serverWidth,
+      this._serverHeight,
+    );
+
+    this.send(packet.toBuffer());
+  }
+
+  /** Coalesce input produced in the same tick into one packet and send it. */
+  scheduleFlush() {
+    if (this._flushTimer) {
+      return;
+    }
+    this._flushTimer = setTimeout(() => {
+      this._flushTimer = null;
+      this.flushInput();
+    }, 0);
   }
 
   onMessage(event: any) {
@@ -193,6 +216,11 @@ export default class InputChannel extends BaseChannel {
 
   onClose(event: any) {
     clearInterval(this._inputInterval);
+    if (this._flushTimer) {
+      clearTimeout(this._flushTimer);
+      this._flushTimer = null;
+    }
+    this._lastGamepadSignature = '';
 
     super.onClose(event);
     console.log(
@@ -233,17 +261,55 @@ export default class InputChannel extends BaseChannel {
 
   queueGamepadState(input: InputFrame) {
     if (input !== null) {
-      // Bound the queue to prevent unbounded growth if interval is delayed
+      // Bound the queue to prevent unbounded growth if the socket stalls
       if (this._gamepadFrames.length >= 6) {
         this._gamepadFrames.splice(0, this._gamepadFrames.length - 2);
       }
-      return this._gamepadFrames.push(input);
+      this._gamepadFrames.push(input);
+      this.scheduleFlush();
     }
   }
 
+  _gamepadSignature(frame: any) {
+    return [
+      frame.A,
+      frame.B,
+      frame.X,
+      frame.Y,
+      frame.LeftShoulder,
+      frame.RightShoulder,
+      frame.View,
+      frame.Menu,
+      frame.LeftThumb,
+      frame.RightThumb,
+      frame.DPadUp,
+      frame.DPadDown,
+      frame.DPadLeft,
+      frame.DPadRight,
+      frame.Nexus,
+      frame.LeftTrigger,
+      frame.RightTrigger,
+      frame.LeftThumbXAxis,
+      frame.LeftThumbYAxis,
+      frame.RightThumbXAxis,
+      frame.RightThumbYAxis,
+    ].join(',');
+  }
+
   queueGamepadStates(inputs: Array<InputFrame>) {
-    for (const input in inputs) {
-      this.queueGamepadState(inputs[input]);
+    if (!inputs || inputs.length === 0) {
+      return;
+    }
+    // Skip frames that repeat the previous state. The older code re-sent the
+    // whole state on every poll tick, which put up to three 16 ms queues between
+    // the controller and the console for no benefit.
+    const signature = inputs.map(input => this._gamepadSignature(input)).join('|');
+    if (signature === this._lastGamepadSignature) {
+      return;
+    }
+    this._lastGamepadSignature = signature;
+    for (let i = 0; i < inputs.length; i++) {
+      this.queueGamepadState(inputs[i]);
     }
   }
 
@@ -251,8 +317,8 @@ export default class InputChannel extends BaseChannel {
     if (!Array.isArray(events) || events.length === 0) {
       return;
     }
-
     this._pointerFrames.push({events});
+    this.scheduleFlush();
   }
 
   _convertToInt16(e: any) {
