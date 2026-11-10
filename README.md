@@ -5,7 +5,7 @@
 <h1 align="center">Anomaly Xbox</h1>
 
 <p align="center">
-  Free, open-source Xbox Remote Play and xCloud streaming client for Android.
+  Free, open-source Xbox Remote Play client for Android.
 </p>
 
 <p align="center">
@@ -16,17 +16,21 @@
 
 ---
 
-Anomaly Xbox is a personal fork of [XStreaming](https://github.com/Geocld/XStreaming)
-v2.12.0, rebuilt as a standalone app for playing an Xbox console on a phone with any
-standard Android gamepad.
+Anomaly Xbox is a personal fork of [XStreaming](https://github.com/Geocld/XStreaming),
+rebuilt as a small standalone app for playing an Xbox console on a phone with any standard
+Android gamepad.
+
+Version 3.0.0 replaces the original full media-app interface with an Anomaly-style shell:
+one console list, six short settings sections and a launch animation. Cloud gaming,
+achievements, friends, the store, search and history were removed.
 
 ## Features
 
 - **Xbox Remote Play** — stream your own Xbox One or Xbox Series S|X over the local network
-- **Xbox Cloud Gaming** — play Game Pass titles (Game Pass Ultimate required)
 - Up to 1080p with hardware video decoding and rumble
 - Works with standard Android HID gamepads, including the GameSir X5 Lite and Nova Lite
-- Anomaly launcher icon, monochrome icon and dark splash screen
+- Six accent palettes: Electric Violet, Graphite, Emerald, Rust, Honey, Lapiz
+- Anomaly launch animation before a stream, tap to skip
 - Update checker disabled by default and pointed at this repository
 
 ## Download
@@ -37,7 +41,7 @@ Grab the latest signed APK from the
 | | |
 |---|---|
 | Package | `app.anomaly.xbox` |
-| Version | 2.12.0 |
+| Version | 3.0.0 |
 | Minimum Android | 8.0 (API 26) |
 | ABIs | arm64-v8a, armeabi-v7a |
 | License | AGPL-3.0 |
@@ -51,8 +55,13 @@ Grab the latest signed APK from the
    not to this app.
 4. Connect the phone and the console to the same network, then pick the console on the
    home screen.
-5. For cloud gaming, sign in with an account that has Game Pass Ultimate and choose a title
-   from the Cloud tab.
+
+## Stream quality
+
+The defaults are chosen for a phone screen: **1080p** and **Zoom**. Zoom fills the display,
+keeps the aspect ratio and avoids upscaling a 1080p stream on a 1080p screen. If you prefer
+no cropping, choose **Stretch** in **Settings → Streaming**. If the stream stutters, drop
+the resolution to 720p.
 
 ## Controllers
 
@@ -84,14 +93,15 @@ build the app.
 
 ## Changes from upstream
 
-See [MODIFICATIONS-XBOX.md](MODIFICATIONS-XBOX.md). In short: new app id and label, Anomaly
-icons and splash screen, About-screen branding, update checker disabled by default,
-prebuilt native libraries instead of a Rust/CMake build, and a fixed malformed upstream
-patch file.
+See [MODIFICATIONS-XBOX.md](MODIFICATIONS-XBOX.md). In short: Anomaly identity and icons,
+Anomaly-style home and settings screens, six palettes, launch animation, 1080p/Zoom stream
+defaults, 21 XStreaming screens removed, prebuilt native libraries instead of a Rust/CMake
+build, and a fixed malformed upstream patch file.
 
 ## Limitations
 
-- Built and statically validated, but not yet tested against real Xbox hardware.
+- Built and statically validated, but version 3.0.0 has not yet been tested against real
+  Xbox hardware.
 - Xbox remote play requires the console to be configured for remote features and signed in
   with the same Microsoft account.
 - Microsoft can change its streaming endpoints at any time; upstream XStreaming releases

@@ -4,7 +4,6 @@ import {
   Animated,
   DeviceEventEmitter,
   Linking,
-  useColorScheme,
   NativeModules,
   StyleSheet,
   View,
@@ -15,11 +14,9 @@ import {
   Dialog,
   PaperProvider,
   MD3DarkTheme,
-  MD3LightTheme,
   Portal,
   ProgressBar,
   Text,
-  useTheme,
   adaptNavigationTheme,
 } from 'react-native-paper';
 
@@ -44,16 +41,12 @@ import {
   Settings,
 } from './store/settingStore';
 import {saveServerData} from './store/serverStore';
-import {findTitleByProductId} from './store/shortcutStore';
 
-import customLightTheme from './theme/index';
 import customDarkTheme from './theme/index.dark';
+import {AnomalyThemeProvider, useAnomalyTheme} from './anomaly/theme';
+import {resolvePalette} from './anomaly/palette';
 
 import HomeScreen from './pages/Home';
-import CloudScreen from './pages/Cloud';
-import FriendsScreen from './pages/Friends';
-import AchivementScreen from './pages/Achivements';
-import AchivementDetailScreen from './pages/ArchivementDetail';
 import LoginScreen from './pages/Login';
 import StreamScreen from './pages/Stream';
 import NativeStreamScreen from './pages/NativeStream';
@@ -61,49 +54,27 @@ import NativePortraitStreamScreen from './pages/NativePortraitStream';
 import NanoStreamScreen from './pages/NanoStream';
 import SettingsScreen from './pages/Settings';
 import SettingDetailScreen from './pages/SettingDetail';
-import TitleDetailScreen from './pages/TitleDetail';
-import DebugScreen from './pages/Debug';
-import GameMapScreen from './pages/GameMap';
-import NativeGameMapScreen from './pages/NativeGameMap';
-import GameMapDetailScreen from './pages/GameMapDetail';
-import DisplaySettingsScreen from './pages/DisplaySettings';
 import AboutScreen from './pages/About';
-import AboutZhScreen from './pages/AboutZh';
-import FeedbackScreen from './pages/Feedback';
 import VirtualGamepadSettingsScreen from './pages/VirtualGamepadSettings';
 import CustomGamepadScreen from './pages/CustomGamepad';
-import HoldButtonsScreen from './pages/HoldButtons';
-import VirtualMacroSettingsScreen from './pages/VirtualMacroSettings';
-import Ds5SettingsScreen from './pages/Ds5Settings';
-import DeviceInfosScreen from './pages/DeviceInfos';
 import GamepadTestScreen from './pages/GamepadTest';
-import TransferScreen from './pages/Transfer';
-import ThanksScreen from './pages/Thanks';
-import HistoryScreen from './pages/History';
-import ServerScreen from './pages/Server';
 import updater from './utils/updater';
 import getServer from './utils/get-server';
 import {
   applyPrimaryColorToPaperTheme,
-  DEFAULT_THEME_PRIMARY_COLOR,
-  normalizeHexColor,
 } from './utils/themeColor';
-import XboxSymbolBackground from './components/XboxSymbolBackground';
 
 import {useTranslation} from 'react-i18next';
 
 import {SystemBars} from 'react-native-edge-to-edge';
 
 import './i18n';
-import SearchScreen from './pages/Search';
 
 const RootStack = createStackNavigator();
 const navigationRef = createNavigationContainerRef<any>();
 
-const {UsbRumbleManager, FullScreenManager, UpdateManager, ShortcutManager} =
-  NativeModules;
+const {UsbRumbleManager, FullScreenManager, UpdateManager} = NativeModules;
 const UPDATE_PROGRESS_EVENT = 'UpdateManagerProgress';
-const TITLE_SHORTCUT_EVENT = 'onTitleShortcutOpen';
 
 const formatUpdateBytes = (bytes?: number) => {
   if (!bytes || bytes <= 0) {
@@ -114,27 +85,18 @@ const formatUpdateBytes = (bytes?: number) => {
   return `${mb >= 10 ? mb.toFixed(1) : mb.toFixed(2)} MB`;
 };
 
-const {LightTheme, DarkTheme} = adaptNavigationTheme({
+const {DarkTheme} = adaptNavigationTheme({
   reactNavigationLight: NavigationDefaultTheme,
   reactNavigationDark: NavigationDarkTheme,
 });
 
-const PAGE_BACKGROUND_LIGHT = '#FCFBFF';
-const PAGE_BACKGROUND_DARK = '#111320';
-
 const withPageBackground = (ScreenComponent: any) => {
   const WrappedScreen = (props: any) => {
-    const theme = useTheme();
-    const isLight = !theme.dark;
-    const primaryColor = theme.colors.primary;
+    const palette = useAnomalyTheme();
 
     return (
       <View
-        style={[
-          styles.backgroundScreen,
-          isLight ? styles.backgroundScreenLight : styles.backgroundScreenDark,
-        ]}>
-        <XboxSymbolBackground isLight={isLight} primaryColor={primaryColor} />
+        style={[styles.backgroundScreen, {backgroundColor: palette.background}]}>
         <View style={styles.backgroundContent}>
           <ScreenComponent {...props} />
         </View>
@@ -150,15 +112,11 @@ const withPageBackground = (ScreenComponent: any) => {
 
 const withSolidPageBackground = (ScreenComponent: any) => {
   const WrappedScreen = (props: any) => {
-    const theme = useTheme();
-    const isLight = !theme.dark;
+    const palette = useAnomalyTheme();
 
     return (
       <View
-        style={[
-          styles.backgroundScreen,
-          isLight ? styles.backgroundScreenLight : styles.backgroundScreenDark,
-        ]}>
+        style={[styles.backgroundScreen, {backgroundColor: palette.background}]}>
         <View style={styles.backgroundContent}>
           <ScreenComponent {...props} />
         </View>
@@ -216,49 +174,20 @@ const settingsTransitionSpec = {
 };
 
 const HomeBackgroundScreen = withPageBackground(HomeScreen);
-const CloudBackgroundScreen = withPageBackground(CloudScreen);
-const FriendsBackgroundScreen = withPageBackground(FriendsScreen);
-const AchivementBackgroundScreen = withPageBackground(AchivementScreen);
-const AchivementDetailBackgroundScreen = withPageBackground(
-  AchivementDetailScreen,
-);
 const LoginBackgroundScreen = withPageBackground(LoginScreen);
 const SettingsBackgroundScreen = withSolidPageBackground(SettingsScreen);
 const SettingDetailBackgroundScreen = withPageBackground(SettingDetailScreen);
-const TitleDetailBackgroundScreen = withPageBackground(TitleDetailScreen);
-const DebugBackgroundScreen = withPageBackground(DebugScreen);
-const GameMapBackgroundScreen = withPageBackground(GameMapScreen);
-const NativeGameMapBackgroundScreen = withPageBackground(NativeGameMapScreen);
-const GameMapDetailBackgroundScreen = withPageBackground(GameMapDetailScreen);
-const DisplaySettingsBackgroundScreen = withPageBackground(
-  DisplaySettingsScreen,
-);
 const AboutBackgroundScreen = withPageBackground(AboutScreen);
-const AboutZhBackgroundScreen = withPageBackground(AboutZhScreen);
-const FeedbackBackgroundScreen = withPageBackground(FeedbackScreen);
 const VirtualGamepadSettingsBackgroundScreen = withPageBackground(
   VirtualGamepadSettingsScreen,
 );
-const HoldButtonsBackgroundScreen = withPageBackground(HoldButtonsScreen);
-const VirtualMacroSettingsBackgroundScreen = withPageBackground(
-  VirtualMacroSettingsScreen,
-);
-const Ds5SettingsBackgroundScreen = withPageBackground(Ds5SettingsScreen);
-const DeviceInfosBackgroundScreen = withPageBackground(DeviceInfosScreen);
 const GamepadTestBackgroundScreen = withPageBackground(GamepadTestScreen);
-const TransferBackgroundScreen = withPageBackground(TransferScreen);
-const ThanksBackgroundScreen = withPageBackground(ThanksScreen);
-const HistoryBackgroundScreen = withPageBackground(HistoryScreen);
-const ServerBackgroundScreen = withPageBackground(ServerScreen);
-const SearchBackgroundScreen = withPageBackground(SearchScreen);
 
 function App() {
   const {t} = useTranslation();
-  const colorScheme = useColorScheme();
   const [settings, setSettings] = React.useState<Settings>(() => getSettings());
   const deviceInfos = FullScreenManager.getDeviceInfos();
   const updateCheckedRef = React.useRef(false);
-  const pendingTitleShortcutRef = React.useRef<any>(null);
   const [updateProgressVisible, setUpdateProgressVisible] =
     React.useState(false);
   const [updateProgress, setUpdateProgress] = React.useState({
@@ -299,49 +228,6 @@ function App() {
       subscription.remove();
     };
   }, []);
-
-  const openTitleShortcut = React.useCallback(
-    (shortcut: any) => {
-      if (!shortcut?.productId) {
-        return;
-      }
-
-      if (!navigationRef.isReady()) {
-        pendingTitleShortcutRef.current = shortcut;
-        return;
-      }
-
-      const titleItem = findTitleByProductId(shortcut.productId);
-      if (!titleItem) {
-        Alert.alert(t('Warning'), t('TitleShortcutExpired'));
-        return;
-      }
-
-      navigationRef.navigate('TitleDetail', {titleItem});
-    },
-    [t],
-  );
-
-  React.useEffect(() => {
-    if (!ShortcutManager?.getInitialShortcut) {
-      return;
-    }
-
-    ShortcutManager.getInitialShortcut()
-      .then((shortcut: any) => {
-        openTitleShortcut(shortcut);
-      })
-      .catch(() => {});
-
-    const subscription = DeviceEventEmitter.addListener(
-      TITLE_SHORTCUT_EVENT,
-      openTitleShortcut,
-    );
-
-    return () => {
-      subscription.remove();
-    };
-  }, [openTitleShortcut]);
 
   React.useEffect(() => {
     if (!settings.check_update || updateCheckedRef.current) {
@@ -439,48 +325,31 @@ function App() {
     });
   }, []);
 
-  const primaryColor = normalizeHexColor(
-    settings.theme_primary_color,
-    DEFAULT_THEME_PRIMARY_COLOR,
-  );
-  const paperLightTheme = applyPrimaryColorToPaperTheme(
-    {
-      ...MD3LightTheme,
-      colors: customLightTheme.colors,
-    },
-    'light',
-    primaryColor,
-  );
+  const palette = resolvePalette(settings.anomaly_theme);
   const paperDarkTheme = applyPrimaryColorToPaperTheme(
     {
       ...MD3DarkTheme,
-      colors: customDarkTheme.colors,
+      colors: {
+        ...customDarkTheme.colors,
+        background: palette.background,
+        surface: palette.surface,
+        onSurface: palette.text,
+        onBackground: palette.text,
+        outline: palette.border,
+      },
     },
     'dark',
-    primaryColor,
+    palette.primary,
   );
-  const CombinedDefaultTheme = merge(paperLightTheme, LightTheme);
   const CombinedDarkTheme = merge(paperDarkTheme, DarkTheme);
-  CombinedDefaultTheme.colors.background = PAGE_BACKGROUND_LIGHT;
-  CombinedDefaultTheme.colors.card = PAGE_BACKGROUND_LIGHT;
-  CombinedDarkTheme.colors.background = PAGE_BACKGROUND_DARK;
-  CombinedDarkTheme.colors.card = PAGE_BACKGROUND_DARK;
+  CombinedDarkTheme.colors.background = palette.background;
+  CombinedDarkTheme.colors.card = palette.background;
+  CombinedDarkTheme.colors.primary = palette.primary;
+  CombinedDarkTheme.colors.text = palette.text;
+  CombinedDarkTheme.colors.border = palette.border;
 
-  let paperTheme = paperDarkTheme;
-  let navigationTheme = CombinedDarkTheme;
-
-  if (settings.theme === 'auto') {
-    paperTheme = colorScheme === 'dark' ? paperDarkTheme : paperLightTheme;
-    navigationTheme =
-      colorScheme === 'dark' ? CombinedDarkTheme : CombinedDefaultTheme;
-  } else if (settings.theme === 'light') {
-    paperTheme = paperLightTheme;
-    navigationTheme = CombinedDefaultTheme;
-  }
-
-  const isLight =
-    settings.theme === 'light' ||
-    (settings.theme === 'auto' && colorScheme === 'light');
+  const paperTheme = paperDarkTheme;
+  const navigationTheme = CombinedDarkTheme;
 
   if (
     deviceInfos.factor?.toLocaleUpperCase().indexOf('NINTENDO') > -1 &&
@@ -510,20 +379,18 @@ function App() {
         )}`;
 
   return (
-    <>
+    <AnomalyThemeProvider themeId={settings.anomaly_theme}>
       <Provider store={store}>
         <PaperProvider theme={paperTheme}>
-          <NavigationContainer
-            ref={navigationRef}
-            theme={navigationTheme}
-            onReady={() => {
-              if (pendingTitleShortcutRef.current) {
-                const shortcut = pendingTitleShortcutRef.current;
-                pendingTitleShortcutRef.current = null;
-                openTitleShortcut(shortcut);
-              }
-            }}>
-            <RootStack.Navigator>
+          <NavigationContainer ref={navigationRef} theme={navigationTheme}>
+            <RootStack.Navigator
+              screenOptions={{
+                headerStyle: {backgroundColor: palette.background},
+                headerTintColor: palette.text,
+                headerTitleStyle: {fontWeight: '700'},
+                headerShadowVisible: false,
+                cardStyle: {backgroundColor: palette.background},
+              }}>
               <RootStack.Group>
                 <RootStack.Screen
                   name="Home"
@@ -532,11 +399,6 @@ function App() {
                     headerShown: false,
                     cardStyle: styles.transparentCard,
                   }}
-                />
-                <RootStack.Screen
-                  name="Cloud"
-                  component={CloudBackgroundScreen}
-                  options={{headerShown: false}}
                 />
                 <RootStack.Screen
                   name="Settings"
@@ -586,118 +448,18 @@ function App() {
                   options={{title: t('Custom')}}
                 />
                 <RootStack.Screen
-                  name="HoldButtons"
-                  component={HoldButtonsBackgroundScreen}
-                  options={{title: t('Hold Buttons')}}
-                />
-                <RootStack.Screen
-                  name="VirtualMacroSettings"
-                  component={VirtualMacroSettingsBackgroundScreen}
-                  options={{title: t('Virtual macro settings')}}
-                />
-                <RootStack.Screen
-                  name="Display"
-                  component={DisplaySettingsBackgroundScreen}
-                  options={{title: t('Display')}}
-                />
-                <RootStack.Screen
-                  name="Search"
-                  component={SearchBackgroundScreen}
-                  options={{title: t('Search'), headerShown: false}}
-                />
-                <RootStack.Screen
-                  name="Friends"
-                  component={FriendsBackgroundScreen}
-                  options={{title: t('Friends')}}
-                />
-                <RootStack.Screen
-                  name="Achivements"
-                  component={AchivementBackgroundScreen}
-                  options={{title: t('Achivements')}}
-                />
-                <RootStack.Screen
                   name="About"
                   component={AboutBackgroundScreen}
                   options={{title: t('About')}}
-                />
-                <RootStack.Screen
-                  name="AboutZh"
-                  component={AboutZhBackgroundScreen}
-                  options={{title: t('About')}}
-                />
-                <RootStack.Screen
-                  name="Feedback"
-                  component={FeedbackBackgroundScreen}
-                  options={{title: t('Feedback')}}
-                />
-                <RootStack.Screen
-                  name="Thanks"
-                  component={ThanksBackgroundScreen}
-                  options={{title: t('Thanks')}}
-                />
-                <RootStack.Screen
-                  name="History"
-                  component={HistoryBackgroundScreen}
-                  options={{title: t('HistoryTitle')}}
-                />
-                <RootStack.Screen
-                  name="Server"
-                  component={ServerBackgroundScreen}
-                  options={{title: t('Server')}}
-                />
-                <RootStack.Screen
-                  name="GameMap"
-                  component={GameMapBackgroundScreen}
-                  options={{title: t('GameMap')}}
                 />
                 <RootStack.Screen
                   name="SettingDetail"
                   component={SettingDetailBackgroundScreen}
                 />
                 <RootStack.Screen
-                  name="NativeGameMap"
-                  component={NativeGameMapBackgroundScreen}
-                  options={{title: t('GameMap')}}
-                />
-                <RootStack.Screen
-                  name="Ds5"
-                  component={Ds5SettingsBackgroundScreen}
-                  options={{title: t('DualSense')}}
-                />
-                <RootStack.Screen
-                  name="DeviceInfos"
-                  component={DeviceInfosBackgroundScreen}
-                  options={{title: t('Device testing')}}
-                />
-                <RootStack.Screen
                   name="GamepadTest"
                   component={GamepadTestBackgroundScreen}
                   options={{title: t('GamepadTestTitle')}}
-                />
-                <RootStack.Screen
-                  name="Transfer"
-                  component={TransferBackgroundScreen}
-                  options={{title: t('ConfigTransfer')}}
-                />
-                <RootStack.Screen
-                  name="Debug"
-                  component={DebugBackgroundScreen}
-                />
-              </RootStack.Group>
-
-              <RootStack.Group screenOptions={{presentation: 'modal'}}>
-                <RootStack.Screen
-                  name="TitleDetail"
-                  component={TitleDetailBackgroundScreen}
-                />
-                <RootStack.Screen
-                  name="AchivementDetail"
-                  component={AchivementDetailBackgroundScreen}
-                />
-                <RootStack.Screen
-                  name="GameMapDetail"
-                  component={GameMapDetailBackgroundScreen}
-                  options={{title: t('GameMap')}}
                 />
               </RootStack.Group>
             </RootStack.Navigator>
@@ -725,20 +487,14 @@ function App() {
           </Portal>
         </PaperProvider>
       </Provider>
-      <SystemBars style={isLight ? 'dark' : 'light'} hidden={false} />
-    </>
+      <SystemBars style="light" hidden={false} />
+    </AnomalyThemeProvider>
   );
 }
 
 const styles = StyleSheet.create({
   backgroundScreen: {
     flex: 1,
-  },
-  backgroundScreenLight: {
-    backgroundColor: PAGE_BACKGROUND_LIGHT,
-  },
-  backgroundScreenDark: {
-    backgroundColor: PAGE_BACKGROUND_DARK,
   },
   backgroundContent: {
     flex: 1,

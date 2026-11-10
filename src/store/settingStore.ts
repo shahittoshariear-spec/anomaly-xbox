@@ -98,6 +98,8 @@ export type Settings = {
   server_credential: string;
   theme: string;
   theme_primary_color: string;
+  anomaly_theme: string;
+  settings_schema: number;
   show_menu: boolean;
   fsr: boolean;
   smart_frame_generation: boolean;
@@ -112,7 +114,7 @@ export type Settings = {
 const defaultSettings: Settings = {
   locale: 'en',
   locale_follow_system: true,
-  resolution: 720,
+  resolution: 1080,
   render_engine: 'native',
   xhome_bitrate_mode: 'auto',
   xhome_bitrate: 20,
@@ -143,7 +145,7 @@ const defaultSettings: Settings = {
   edge_compensation: 0,
   short_trigger: false,
   auto_sprint: false,
-  video_format: '',
+  video_format: 'Zoom',
   picture_in_picture: defaultPictureInPicture,
   native_portrait_mode: false,
   native_portrait_gamepad_layout: [],
@@ -192,6 +194,8 @@ const defaultSettings: Settings = {
   hold_buttons: [],
   theme: 'dark',
   theme_primary_color: DEFAULT_THEME_PRIMARY_COLOR,
+  anomaly_theme: 'electric-violet',
+  settings_schema: 2,
   show_menu: false,
   fsr: false,
   smart_frame_generation: false,
@@ -266,6 +270,18 @@ export const getSettings = (): Settings => {
     if (_settings.show_session_report !== undefined) {
       merged.show_session_report =
         String(_settings.show_session_report) === 'true';
+    }
+    // One-time migration from the original XStreaming defaults: the old build
+    // started at 720p with letterboxing, which looked small and soft on phones.
+    if (!_settings.settings_schema) {
+      if (merged.resolution === 720) {
+        merged.resolution = 1080;
+      }
+      if (!merged.video_format) {
+        merged.video_format = 'Zoom';
+      }
+      merged.settings_schema = 2;
+      storage.set(STORE_KEY, JSON.stringify(merged));
     }
     if (Platform.isTV) {
       merged.picture_in_picture = false;

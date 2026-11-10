@@ -6,18 +6,21 @@ import {
   Platform,
   ScrollView,
   Dimensions,
-  useWindowDimensions,
-  SafeAreaView,
   NativeModules,
+  StatusBar,
   ToastAndroid,
-  Linking,
   BackHandler,
+  Image,
+  Pressable,
 } from 'react-native';
-import {Button, Text, Portal, Modal, Card, useTheme} from 'react-native-paper';
+import {Button, Text, Portal, Modal, Card} from 'react-native-paper';
 import {useIsFocused} from '@react-navigation/native';
 import RNRestart from 'react-native-restart';
-import ConsoleItem from '../components/ConsoleItem';
-import HomeItem from '../components/HomeItem';
+import ConsoleCard from '../anomaly/ConsoleCard';
+import LaunchAnimation from '../anomaly/LaunchAnimation';
+import {AnomalyScreen, SectionHeader, SurfaceCard} from '../anomaly/ui';
+import {useAnomalyTheme} from '../anomaly/theme';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import GamepadFooterHints, {
   GamepadHintItem,
 } from '../components/GamepadFooterHints';
@@ -51,14 +54,11 @@ const log = debugFactory('HomeScreen');
 
 const {UsbRumbleManager, FullScreenManager} = NativeModules;
 
-const HARMOBY_URL =
-  'https://appgallery.huawei.com/app/detail?id=com.lijiahao.xstreamingoh';
-
 const MSAL = 'msal';
 
 function HomeScreen({navigation, route}) {
   const {t} = useTranslation();
-  const theme = useTheme();
+  const palette = useAnomalyTheme();
   const [loading, setLoading] = React.useState(false);
   const [loadingText, setLoadingText] = React.useState('');
   const [_, setXalUrl] = React.useState('');
@@ -76,13 +76,17 @@ function HomeScreen({navigation, route}) {
   const [isConnected, setIsConnected] = React.useState(true);
   const [currentConsoleId, setCurrentConsoleId] = React.useState('');
   const [showUsbWarnModal, setShowUsbWarnShowModal] = React.useState(false);
-  const [showHarmonyModal, setShowHarmonyModal] = React.useState(false);
-  const [numColumns, setNumColumns] = React.useState(2);
   const [showLogin, setShowLogin] = React.useState(false);
   const [showMsalLogin, setShowMsalLogin] = React.useState(false);
   const [showMsal, setShowMsal] = React.useState(false);
   const [msalBtnLoading, setMsalBtnLoading] = React.useState(false);
   const [msalData, setMsalData] = React.useState(null);
+  const [launch, setLaunch] = React.useState<{
+    visible: boolean;
+    routeName?: string;
+    params?: any;
+    label?: string;
+  }>({visible: false});
 
   // Session report modal state
   const [sessionReport, setSessionReport] = React.useState<any>(null);
@@ -140,11 +144,7 @@ function HomeScreen({navigation, route}) {
     }
   }, [isFocused]);
 
-  const {width, height} = useWindowDimensions();
-  const emptyConsoleCardStyle = React.useMemo(
-    () => [styles.emptyConsoleCard, theme.dark && styles.emptyConsoleCardDark],
-    [theme.dark],
-  );
+
 
   // 1. One-time mount initialization (listeners, non-blocking checks)
   React.useEffect(() => {
@@ -152,8 +152,7 @@ function HomeScreen({navigation, route}) {
     SplashScreen.hide();
 
     const updateLayout = () => {
-      const {width: w, height: h} = Dimensions.get('window');
-      setNumColumns(w > h ? 4 : 2);
+      // Layout is a single column now; nothing to recompute.
     };
 
     updateLayout();
@@ -176,16 +175,6 @@ function HomeScreen({navigation, route}) {
             _settings.render_engine = 'native';
             saveSettings(_settings);
           }
-        }
-
-        if (
-          deviceInfos &&
-          deviceInfos.factor &&
-          deviceInfos.factor.indexOf('HUAWEI') > -1 &&
-          _settings.locale === 'zh' &&
-          _settings.show_harmony_modal
-        ) {
-          setShowHarmonyModal(true);
         }
       } catch (err) {
         log.warn('Device info check error:', err);
@@ -559,8 +548,10 @@ function HomeScreen({navigation, route}) {
         : 'NativeStream';
     }
 
-    navigation.navigate({
-      name: routeName,
+    setLaunch({
+      visible: true,
+      routeName,
+      label: t('Connecting to your Xbox'),
       params: {
         sessionId,
         settings,
@@ -572,18 +563,7 @@ function HomeScreen({navigation, route}) {
 
   // Focus navigation state for gamepad / TV remote
   const [isGamepadActive, setIsGamepadActive] = useGamepadActiveState();
-  const [focusedSection, setFocusedSection] = React.useState<
-    'consoles' | 'refresh' | 'more'
-  >('more');
   const [focusedIndex, setFocusedIndex] = React.useState<number>(0);
-
-  // Sync focusedSection when consoles change
-  React.useEffect(() => {
-    if (consoles.length > 0 && focusedSection === 'refresh') {
-      setFocusedSection('consoles');
-      setFocusedIndex(0);
-    }
-  }, [consoles.length, focusedSection]);
 
   useGamepadNavigation({
     enabled:
@@ -593,78 +573,27 @@ function HomeScreen({navigation, route}) {
       !showMsalLogin &&
       !showMsal &&
       !showUsbWarnModal &&
-      !showHarmonyModal &&
       !sessionReport,
-    onRight: () => {
-      if (focusedSection === 'consoles') {
-        if (focusedIndex < consoles.length - 1) {
-          setFocusedIndex(prev => prev + 1);
-        }
-      } else if (focusedSection === 'more') {
-        if (focusedIndex < 2) {
-          setFocusedIndex(prev => prev + 1);
-        }
+    onDown: () => {
+      if (focusedIndex < consoles.length - 1) {
+        setFocusedIndex(prev => prev + 1);
       }
     },
-    onLeft: () => {
+    onUp: () => {
       if (focusedIndex > 0) {
         setFocusedIndex(prev => prev - 1);
       }
     },
-    onDown: () => {
-      if (focusedSection === 'consoles') {
-        if (focusedIndex + numColumns < consoles.length) {
-          setFocusedIndex(prev => prev + numColumns);
-        } else {
-          setFocusedSection('more');
-          setFocusedIndex(0);
-        }
-      } else if (focusedSection === 'refresh') {
-        setFocusedSection('more');
-        setFocusedIndex(0);
-      }
-    },
-    onUp: () => {
-      if (focusedSection === 'more') {
-        if (consoles.length > 0) {
-          setFocusedSection('consoles');
-          setFocusedIndex(0);
-        } else {
-          setFocusedSection('refresh');
-          setFocusedIndex(0);
-        }
-      } else if (focusedSection === 'consoles') {
-        if (focusedIndex >= numColumns) {
-          setFocusedIndex(prev => prev - numColumns);
-        }
-      }
-    },
     onSelect: () => {
-      if (focusedSection === 'consoles') {
-        const item: any = consoles[focusedIndex];
-        if (item) {
-          handleStartStream(item.serverId);
-        }
-      } else if (focusedSection === 'refresh') {
-        handleRefreshConsoles();
-      } else if (focusedSection === 'more') {
-        if (focusedIndex === 0) {
-          navigation.navigate('Cloud');
-        } else if (focusedIndex === 1) {
-          navigation.navigate('Achivements');
-        } else if (focusedIndex === 2) {
-          navigation.navigate('Settings');
-        }
+      const item: any = consoles[focusedIndex];
+      if (item) {
+        handleStartStream(item.serverId);
       }
     },
     onActionX: () => {
-      if (focusedSection === 'consoles') {
-        const item: any = consoles[focusedIndex];
-        if (item) {
-          handlePoweronAndStream(item.serverId);
-        }
-      } else if (focusedSection === 'more' && focusedIndex === 0) {
-        navigation.navigate('Cloud');
+      const item: any = consoles[focusedIndex];
+      if (item) {
+        handlePoweronAndStream(item.serverId);
       }
     },
     onBack: () => {
@@ -676,9 +605,6 @@ function HomeScreen({navigation, route}) {
   const [focusedLoginBtn, setFocusedLoginBtn] = React.useState<
     'login' | 'settings'
   >('login');
-  const [focusedHarmonyBtn, setFocusedHarmonyBtn] = React.useState<
-    'dismiss' | 'install'
-  >('install');
 
   useGamepadNavigation({
     enabled:
@@ -687,7 +613,6 @@ function HomeScreen({navigation, route}) {
       (showLogin || showMsalLogin) &&
       !showMsal &&
       !showUsbWarnModal &&
-      !showHarmonyModal &&
       !sessionReport,
     priority: 5,
     onUp: () => {
@@ -721,29 +646,6 @@ function HomeScreen({navigation, route}) {
     },
     onBack: () => {
       setShowUsbWarnShowModal(false);
-    },
-  });
-
-  useGamepadNavigation({
-    enabled: isFocused && showHarmonyModal,
-    priority: 10,
-    onLeft: () => setFocusedHarmonyBtn('dismiss'),
-    onRight: () => setFocusedHarmonyBtn('install'),
-    onUp: () => setFocusedHarmonyBtn('dismiss'),
-    onDown: () => setFocusedHarmonyBtn('install'),
-    onSelect: () => {
-      if (focusedHarmonyBtn === 'install') {
-        Linking.openURL(HARMOBY_URL);
-        setShowHarmonyModal(false);
-      } else {
-        let _settings = getSettings();
-        _settings.show_harmony_modal = false;
-        saveSettings(_settings);
-        setShowHarmonyModal(false);
-      }
-    },
-    onBack: () => {
-      setShowHarmonyModal(false);
     },
   });
 
@@ -798,62 +700,6 @@ function HomeScreen({navigation, route}) {
     );
   };
 
-  const renderHarmonyModal = () => {
-    if (!showHarmonyModal) {
-      return null;
-    }
-    return (
-      <Portal>
-        <Modal
-          visible={true}
-          onDismiss={() => {
-            setShowHarmonyModal(false);
-          }}
-          contentContainerStyle={{marginLeft: '4%', marginRight: '4%'}}>
-          <Card>
-            <Card.Content>
-              <Text>
-                XStreaming鸿蒙版已正式发布App Gallery，如您的设备系统为HarmonyOS
-                5以上，您可以安装原生版本以获得更好的串流体验(点击立即下载或应用商店搜索"XStreaming"进行安装)。
-              </Text>
-
-              <Button
-                mode={focusedHarmonyBtn === 'dismiss' ? 'contained' : 'text'}
-                style={
-                  focusedHarmonyBtn === 'dismiss'
-                    ? styles.actionButtonFocused
-                    : undefined
-                }
-                onPress={() => {
-                  let _settings = getSettings();
-                  _settings.show_harmony_modal = false;
-                  saveSettings(_settings);
-                  setShowHarmonyModal(false);
-                }}>
-                不再提示
-              </Button>
-              <Button
-                mode={
-                  focusedHarmonyBtn === 'install' ? 'contained' : 'elevated'
-                }
-                style={
-                  focusedHarmonyBtn === 'install'
-                    ? styles.actionButtonFocused
-                    : undefined
-                }
-                onPress={() => {
-                  Linking.openURL(HARMOBY_URL);
-                  setShowHarmonyModal(false);
-                }}>
-                去安装
-              </Button>
-            </Card.Content>
-          </Card>
-        </Modal>
-      </Portal>
-    );
-  };
-
   const handleLogin = () => {
     if (_redirect.current && _redirect.current.sisuAuth) {
       navigation.navigate('Login', {
@@ -890,77 +736,51 @@ function HomeScreen({navigation, route}) {
       });
   };
 
-  const renderLogin = () => {
+  const renderSignIn = (isMsal: boolean) => {
     const isLoginFocused =
       (isGamepadActive || Platform.isTV) && focusedLoginBtn === 'login';
-    const isSettingsFocused =
-      (isGamepadActive || Platform.isTV) && focusedLoginBtn === 'settings';
 
     return (
-      <View style={styles.loginCard}>
-        <Text style={styles.title}>{t('NoLogin')}</Text>
-        <Button
-          style={[
-            styles.loginButton,
-            isLoginFocused && styles.actionButtonFocused,
-          ]}
-          mode={isLoginFocused ? 'contained' : 'outlined'}
-          buttonColor={isLoginFocused ? theme.colors.primary : undefined}
-          textColor={isLoginFocused ? '#FFFFFF' : undefined}
-          onPress={handleLogin}>
-          &nbsp;{t('Login')}&nbsp;
-        </Button>
-
-        <Button
-          style={[
-            styles.loginButton,
-            styles.mt10,
-            isSettingsFocused && styles.actionButtonFocused,
-          ]}
-          mode={isSettingsFocused ? 'contained' : 'text'}
-          buttonColor={isSettingsFocused ? theme.colors.primary : undefined}
-          textColor={isSettingsFocused ? '#FFFFFF' : undefined}
-          onPress={() => navigation.navigate('Settings')}>
-          &nbsp;{t('Settings')}&nbsp;
-        </Button>
-      </View>
-    );
-  };
-
-  const renderMsalLogin = () => {
-    const isLoginFocused =
-      (isGamepadActive || Platform.isTV) && focusedLoginBtn === 'login';
-    const isSettingsFocused =
-      (isGamepadActive || Platform.isTV) && focusedLoginBtn === 'settings';
-
-    return (
-      <View style={styles.loginCard}>
-        <Button
-          style={[
-            styles.loginButton,
-            isLoginFocused && styles.actionButtonFocused,
-          ]}
-          mode={isLoginFocused ? 'contained' : 'outlined'}
-          buttonColor={isLoginFocused ? theme.colors.primary : undefined}
-          textColor={isLoginFocused ? '#FFFFFF' : undefined}
-          loading={msalBtnLoading}
-          onPress={handleMsalLogin}>
-          &nbsp;{t('AuthLogin')}&nbsp;
-        </Button>
-
-        <Button
-          style={[
-            styles.loginButton,
-            styles.mt10,
-            isSettingsFocused && styles.actionButtonFocused,
-          ]}
-          mode={isSettingsFocused ? 'contained' : 'text'}
-          buttonColor={isSettingsFocused ? theme.colors.primary : undefined}
-          textColor={isSettingsFocused ? '#FFFFFF' : undefined}
-          onPress={() => navigation.navigate('Settings')}>
-          &nbsp;{t('Settings')}&nbsp;
-        </Button>
-      </View>
+      <SurfaceCard style={styles.signInCard} accentBorder={isLoginFocused}>
+        <Image
+          source={require('../assets/anomaly-logo.png')}
+          style={styles.signInLogo}
+          resizeMode="contain"
+        />
+        <Text style={[styles.signInTitle, {color: palette.text}]}>
+          Sign in to Xbox
+        </Text>
+        <Text style={[styles.signInText, {color: palette.textMuted}]}>
+          Use the Microsoft account that owns your console. Credentials go to
+          Microsoft, never to this app.
+        </Text>
+        <Pressable
+          onPress={isMsal ? handleMsalLogin : handleLogin}
+          disabled={isMsal && msalBtnLoading}
+          style={({pressed}) => [
+            styles.primaryButton,
+            {backgroundColor: palette.primary},
+            pressed && {opacity: 0.85},
+          ]}>
+          <Text style={styles.primaryButtonText}>
+            {isMsal && msalBtnLoading
+              ? t('Loading...')
+              : isMsal
+              ? t('AuthLogin')
+              : t('Login')}
+          </Text>
+        </Pressable>
+        <Pressable
+          onPress={() => navigation.navigate('Settings')}
+          style={({pressed}) => [
+            styles.secondaryButton,
+            pressed && {opacity: 0.7},
+          ]}>
+          <Text style={[styles.secondaryButtonText, {color: palette.textMuted}]}>
+            {t('Settings')}
+          </Text>
+        </Pressable>
+      </SurfaceCard>
     );
   };
 
@@ -975,9 +795,9 @@ function HomeScreen({navigation, route}) {
       return null;
     }
     if (showLogin) {
-      return <View style={styles.centerContainer}>{renderLogin()}</View>;
+      return <View style={styles.centerContainer}>{renderSignIn(false)}</View>;
     } else if (showMsalLogin) {
-      return <View style={styles.centerContainer}>{renderMsalLogin()}</View>;
+      return <View style={styles.centerContainer}>{renderSignIn(true)}</View>;
     } else if (showMsal) {
       return (
         <View style={styles.centerContainer}>
@@ -992,186 +812,175 @@ function HomeScreen({navigation, route}) {
       );
     } else {
       return (
-        <SafeAreaView
-          style={styles.container}
-          onTouchStart={() => {
-            if (!Platform.isTV) setIsGamepadActive(false);
-          }}>
+        <View
+          style={[
+            styles.container,
+            {paddingTop: (StatusBar.currentHeight || 24) + 6},
+          ]}>
           <ScrollView
             style={styles.scrollView}
             contentContainerStyle={[
               styles.scrollContent,
               (isGamepadActive || Platform.isTV) && {paddingBottom: 64},
-            ]}>
-            <View style={[styles.blockTitle]}>
-              <Text variant="titleLarge" style={styles.blockTitleText}>
-                {t('Consoles')}
-              </Text>
+            ]}
+            onTouchStart={() => {
+              if (!Platform.isTV) setIsGamepadActive(false);
+            }}>
+            <View style={styles.hero}>
+              <Image
+                source={require('../assets/anomaly-logo.png')}
+                style={styles.heroLogo}
+                resizeMode="contain"
+              />
+              <View style={styles.heroText}>
+                <Text style={[styles.heroTitle, {color: palette.text}]}>
+                  Anomaly
+                </Text>
+                <Text style={[styles.heroSubtitle, {color: palette.textMuted}]}>
+                  Xbox remote play
+                </Text>
+              </View>
+              <Pressable
+                hitSlop={12}
+                onPress={() => navigation.navigate('Settings')}
+                style={styles.settingsButton}>
+                <MaterialCommunityIcons
+                  name="cog-outline"
+                  size={24}
+                  color={palette.text}
+                />
+              </Pressable>
             </View>
+
+            <SectionHeader
+              title={t('Consoles')}
+              hint={
+                consoles.length > 0
+                  ? 'Tap a console to start remote play.'
+                  : undefined
+              }
+            />
 
             {consoles.length > 0 ? (
               <View style={styles.consoleList}>
-                <View style={styles.consoleGrid}>
-                  {consoles.map((item: any, index: number) => {
-                    const isItemFocused =
+                {consoles.map((item: any, index: number) => (
+                  <ConsoleCard
+                    key={item.serverId || index}
+                    consoleItem={item}
+                    isFocused={
                       (isGamepadActive || Platform.isTV) &&
-                      focusedSection === 'consoles' &&
-                      focusedIndex === index;
-                    return (
-                      <View
-                        key={item.serverId || index}
-                        style={[
-                          styles.consoleItem,
-                          numColumns === 4
-                            ? styles.listItemH
-                            : styles.listItemV,
-                          isItemFocused && {zIndex: 99, overflow: 'visible'},
-                        ]}>
-                        <ConsoleItem
-                          isFocused={isItemFocused}
-                          consoleItem={item}
-                          onPress={() => handleStartStream(item.serverId)}
-                          onPoweronStream={() =>
-                            handlePoweronAndStream(item.serverId)
-                          }
-                          onPoweron={() => handlePower(item.serverId)}
-                          onPoweroff={() => handlePower(item.serverId, true)}
-                        />
-                      </View>
-                    );
-                  })}
-                </View>
+                      focusedIndex === index
+                    }
+                    onStream={() => handleStartStream(item.serverId)}
+                    onPowerOn={() => handlePower(item.serverId)}
+                    onPowerOff={() => handlePower(item.serverId, true)}
+                  />
+                ))}
+
+                <Pressable
+                  onPress={handleRefreshConsoles}
+                  style={({pressed}) => [
+                    styles.refreshRow,
+                    pressed && {opacity: 0.7},
+                  ]}>
+                  <MaterialCommunityIcons
+                    name="refresh"
+                    size={18}
+                    color={palette.primary}
+                  />
+                  <Text style={[styles.refreshText, {color: palette.primary}]}>
+                    {t('Refresh')}
+                  </Text>
+                </Pressable>
               </View>
             ) : (
-              <View style={styles.noConsoles}>
-                <View style={emptyConsoleCardStyle}>
-                  <Text style={styles.emptyConsoleDesc}>{t('NoConsoles')}</Text>
-                  <View style={styles.emptyConsoleActions}>
-                    <Button
-                      mode={
-                        (isGamepadActive || Platform.isTV) &&
-                        focusedSection === 'refresh'
-                          ? 'elevated'
-                          : 'contained-tonal'
-                      }
-                      style={[
-                        styles.emptyActionBtn,
-                        (isGamepadActive || Platform.isTV) &&
-                          focusedSection === 'refresh' &&
-                          styles.actionButtonFocused,
-                      ]}
-                      onPress={handleRefreshConsoles}>
-                      {t('Refresh')}
-                    </Button>
-                  </View>
+              <SurfaceCard style={styles.emptyCard}>
+                <View
+                  style={[
+                    styles.emptyIcon,
+                    {
+                      backgroundColor: `${palette.primary}1A`,
+                      borderColor: `${palette.primary}66`,
+                    },
+                  ]}>
+                  <MaterialCommunityIcons
+                    name="microsoft-xbox"
+                    size={30}
+                    color={palette.primary}
+                  />
                 </View>
-              </View>
+                <Text style={[styles.emptyTitle, {color: palette.text}]}>
+                  No consoles found
+                </Text>
+                <Text style={[styles.emptyText, {color: palette.textMuted}]}>
+                  {t('NoConsoles')}
+                </Text>
+                <Pressable
+                  onPress={handleRefreshConsoles}
+                  style={({pressed}) => [
+                    styles.primaryButton,
+                    {backgroundColor: palette.primary},
+                    pressed && {opacity: 0.85},
+                  ]}>
+                  <Text style={styles.primaryButtonText}>{t('Refresh')}</Text>
+                </Pressable>
+              </SurfaceCard>
             )}
 
-            <View style={styles.blockTitle}>
-              <Text variant="titleLarge" style={styles.blockTitleText}>
-                {t('More')}
+            {!isConnected && (
+              <Text style={[styles.offlineText, {color: palette.textMuted}]}>
+                No network connection.
               </Text>
-            </View>
-
-            <View style={styles.moreItems}>
-              <View
-                style={[
-                  styles.moreItem,
-                  {width: width > 600 ? '15%' : width / 2 - 40},
-                  (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 0 && {zIndex: 99, overflow: 'visible'},
-                ]}>
-                <HomeItem
-                  isFocused={
-                    (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 0
-                  }
-                  title={t('Xcloud')}
-                  icon={'google-controller'}
-                  color={'#FFB900'}
-                  onPress={() => navigation.navigate('Cloud')}
-                />
-              </View>
-
-              <View
-                style={[
-                  styles.moreItem,
-                  {width: width > 600 ? '15%' : width / 2 - 40},
-                  (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 1 && {zIndex: 99, overflow: 'visible'},
-                ]}>
-                <HomeItem
-                  isFocused={
-                    (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 1
-                  }
-                  title={t('Achivements')}
-                  icon={'trophy'}
-                  color={'#E81123'}
-                  onPress={() => navigation.navigate('Achivements')}
-                />
-              </View>
-
-              <View
-                style={[
-                  styles.moreItem,
-                  {width: width > 600 ? '15%' : width / 2 - 40},
-                  (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 2 && {zIndex: 99, overflow: 'visible'},
-                ]}>
-                <HomeItem
-                  isFocused={
-                    (isGamepadActive || Platform.isTV) &&
-                    focusedSection === 'more' &&
-                    focusedIndex === 2
-                  }
-                  title={t('Settings')}
-                  icon={'cog-outline'}
-                  color={'#0078D7'}
-                  onPress={() => navigation.navigate('Settings')}
-                />
-              </View>
-            </View>
+            )}
           </ScrollView>
-        </SafeAreaView>
+        </View>
       );
     }
   };
 
   return (
-    <View
-      style={styles.root}
-      onTouchStart={() => {
-        if (!Platform.isTV) setIsGamepadActive(false);
-      }}>
-      <Spinner loading={loading} text={loadingText} />
+    <AnomalyScreen>
+      <View
+        style={styles.root}
+        onTouchStart={() => {
+          if (!Platform.isTV) setIsGamepadActive(false);
+        }}>
+        <Spinner loading={loading} text={loadingText} />
 
-      {showUsbWarnModal && renderUsbWarningModal()}
+        {showUsbWarnModal && renderUsbWarningModal()}
 
-      {showHarmonyModal && renderHarmonyModal()}
+        {renderContent()}
 
-      {renderContent()}
+        {sessionReport && (
+          <SessionReportModal
+            visible={true}
+            report={sessionReport}
+            onDismiss={handleDismissReport}
+            onDone={handleDoneReport}
+          />
+        )}
 
-      {sessionReport && (
-        <SessionReportModal
-          visible={true}
-          report={sessionReport}
-          onDismiss={handleDismissReport}
-          onDone={handleDoneReport}
+        <GamepadFooterHints
+          visible={isGamepadActive || Platform.isTV}
+          hints={gamepadHints}
         />
-      )}
+      </View>
 
-      <GamepadFooterHints
-        visible={isGamepadActive || Platform.isTV}
-        hints={gamepadHints}
+      <LaunchAnimation
+        visible={launch.visible}
+        label={launch.label}
+        onFinished={() => {
+          const pending = launch;
+          setLaunch({visible: false});
+          if (pending.routeName) {
+            navigation.navigate({
+              name: pending.routeName,
+              params: pending.params,
+            });
+          }
+        }}
       />
-    </View>
+    </AnomalyScreen>
   );
 }
 
@@ -1182,7 +991,6 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    paddingTop: 40,
     backgroundColor: 'transparent',
   },
   scrollView: {
@@ -1198,85 +1006,123 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
-  title: {
-    fontSize: 20,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  loginCard: {
-    alignItems: 'center',
-    justifyContent: 'center',
+  signInCard: {
     width: '100%',
-    maxWidth: 360,
+    maxWidth: 380,
+    alignItems: 'center',
+    padding: 24,
   },
-  loginButton: {
-    minWidth: 200,
-    borderRadius: 8,
+  signInLogo: {
+    width: 72,
+    height: 72,
+    marginBottom: 16,
   },
-  spinnerTextStyle: {
-    color: '#107C10',
+  signInTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 8,
     textAlign: 'center',
   },
-  menuWrap: {
-    width: 250,
+  signInText: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginBottom: 20,
   },
-  noConsoles: {
-    paddingLeft: 20,
-    paddingRight: 20,
-    paddingBottom: 20,
+  primaryButton: {
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 28,
+    alignItems: 'center',
+    minWidth: 190,
   },
-  emptyConsoleCard: {
-    borderRadius: 18,
-    padding: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.68)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.56)',
-    overflow: 'hidden',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 10,
-    },
-    shadowOpacity: 0.12,
-    shadowRadius: 24,
+  primaryButtonText: {
+    color: '#0A0A0F',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
-  emptyConsoleCardDark: {
-    backgroundColor: 'rgba(18, 20, 32, 0.84)',
-    borderColor: 'rgba(255, 255, 255, 0.12)',
-    shadowOpacity: 0.32,
+  secondaryButton: {
+    marginTop: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
   },
-  emptyConsoleHeader: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    marginBottom: 10,
+  secondaryButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  hero: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 6,
+  },
+  heroLogo: {
+    width: 42,
+    height: 42,
+  },
+  heroText: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  heroTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  heroSubtitle: {
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  settingsButton: {
+    padding: 8,
+    borderRadius: 20,
+  },
+  consoleList: {
+    paddingHorizontal: 16,
+  },
+  refreshRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(16, 124, 16, 0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 124, 16, 0.5)',
+    paddingVertical: 12,
   },
-  emptyConsoleMark: {
-    color: '#8BC34A',
+  refreshText: {
+    marginLeft: 6,
+    fontSize: 13,
     fontWeight: '700',
-    fontSize: 16,
-    lineHeight: 18,
   },
-  emptyConsoleTitle: {
-    marginBottom: 8,
+  emptyCard: {
+    marginHorizontal: 16,
+    alignItems: 'center',
+    padding: 24,
   },
-  emptyConsoleDesc: {
-    opacity: 0.88,
-    lineHeight: 20,
+  emptyIcon: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
     marginBottom: 14,
   },
-  emptyConsoleActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-start',
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 6,
   },
-  emptyActionBtn: {
-    marginRight: 10,
+  emptyText: {
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    marginBottom: 18,
+  },
+  offlineText: {
+    textAlign: 'center',
+    fontSize: 12,
+    marginTop: 16,
   },
   actionButtonFocused: {
     borderWidth: 2,
@@ -1285,53 +1131,8 @@ const styles = StyleSheet.create({
     shadowColor: '#FFFFFF',
     shadowOpacity: 0.6,
   },
-  consoleList: {
-    paddingLeft: 10,
-    paddingRight: 10,
-    paddingBottom: 10,
-  },
-  consoleGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  listContainer: {},
-  consoleItem: {
-    padding: 10,
-  },
-  listItemH: {
-    width: '25%',
-    justifyContent: 'center',
-  },
-  listItemV: {
-    width: '50%',
-    justifyContent: 'center',
-  },
-  blockTitle: {
-    paddingLeft: 20,
-    paddingRight: 10,
-    paddingBottom: 10,
-    marginBottom: 10,
-  },
-  blockTitleText: {
-    paddingBottom: 3,
-    borderBottomWidth: 1,
-    borderColor: 'rgba(255, 255, 255, .1)',
-  },
-  moreItems: {
-    paddingLeft: 20,
-    paddingRight: 20,
-    paddingBottom: 40,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
-  },
-  moreItem: {
-    width: '15%',
-    marginRight: 20,
-    marginBottom: 10,
-  },
-  mt10: {
-    marginTop: 10,
+  spinnerTextStyle: {
+    textAlign: 'center',
   },
 });
 

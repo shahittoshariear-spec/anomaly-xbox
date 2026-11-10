@@ -77,3 +77,57 @@ Windows build without Rust targets, NDK 23.1, or a C++ toolchain. The source nat
 The release keystore (`android/app/xstreaming-release-key.keystore`) is generated locally
 and is not part of the source. Passwords are only in `android/gradle.properties` for this
 personal build.
+
+## v3.0.0 — Anomaly UI rework
+
+The v2.12.0 fork kept XStreaming's full interface (cloud, achievements, friends, store,
+search, history, server, DualSense and debug screens). v3.0.0 strips the app down to what
+this project is for: picking an Xbox and starting remote play.
+
+### Interface
+
+- New `src/pages/Home.tsx` layout: Anomaly logo, single vertical list of console cards,
+  refresh action and an empty state. The "More" grid (xCloud, achievements, settings) is
+  gone; settings is a gear in the header.
+- New `src/anomaly/` module: `palette.ts` (six palettes), `theme.tsx` (React context),
+  `ui.tsx` (screen, section headers, cards, pills, icon badges), `ConsoleCard.tsx`,
+  `SettingRow.tsx`, `ThemePicker.tsx` and `LaunchAnimation.tsx`.
+- New `src/pages/Settings.tsx`: six short sections (Appearance, Language, Streaming,
+  Controls, On-screen controls, Audio, Console, App, Data and account) instead of ten
+  long lists.
+- Removed screens and routes: Cloud, Friends, Achievements, AchievementDetail, TitleDetail,
+  Search, History, Feedback, Thanks, Transfer, Ds5, Display, Server, AboutZh, GameMap,
+  NativeGameMap, GameMapDetail, VirtualMacroSettings, HoldButtons, DeviceInfos, Debug.
+  The JS bundle drops from 12.0 MB to 3.3 MB.
+- The HarmonyOS promotion dialog and its gamepad handling were removed.
+- The title-shortcut intent handler was removed with the store screens.
+- About screen is reachable from Settings and kept for AGPL attribution.
+
+### Themes
+
+- Six palettes: Electric Violet (default), Graphite, Emerald, Rust, Honey and Lapiz.
+  Each defines background, surface, raised surface, text, muted text, border and accent.
+- `ThemePicker` applies a palette immediately, with a short accent wash for the transition.
+- The app is dark-only now; the light/auto theme and the colour-grid setting were removed.
+
+### Stream quality
+
+- Default resolution is 1080p instead of 720p (`osName` `windows`).
+- Default `video_format` is `Zoom`, which fills the screen without distortion and does not
+  upscale a 1080p stream on a 1080p display.
+- A one-time migration (`settings_schema: 2`) updates existing installs that still hold
+  the old 720p / letterboxed defaults.
+- The host bitrate setting was removed from the UI: upstream accepts it but never sends it
+  to the console, so it had no effect.
+
+### Launch animation
+
+- `LaunchAnimation` plays when a stream starts: seven streaks converge on the Anomaly mark,
+  a halo expands, then the overlay scales and fades. Tapping skips it.
+
+### Fixes
+
+- Console card power button no longer also triggers the stream action (separate pressables).
+- Launch animation no longer restarts when the home screen re-renders, and cannot call the
+  navigation callback twice.
+- Home header respects the status-bar inset instead of using a fixed 40 px padding.
