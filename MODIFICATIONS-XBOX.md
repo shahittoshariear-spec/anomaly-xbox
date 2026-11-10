@@ -144,3 +144,20 @@ this project is for: picking an Xbox and starting remote play.
   the last connection stage, and offers **Retry at 720p** (which saves `resolution: 720`
   and restarts the stream) or **Exit**.
 - `package.json` / `build.gradle`: version 3.0.1, versionCode 3.
+
+## v3.1.0 — input latency
+
+- `Input.ts`: frames are flushed as soon as they are queued (`scheduleFlush`), instead of
+  waiting for the 62.5 Hz interval. Duplicate gamepad frames are dropped via a state
+  signature. The interval remains as a low-rate keepalive.
+- `webrtc/index.ts`: `setGamepadState` queues the new state immediately, so the
+  `NativeStream` keepalive no longer adds a stage between the event and the packet.
+- `NativeStream.tsx`: stick and trigger listeners call `setGamepadState` directly (they
+  previously waited for the 16 ms timer). USB reports do the same.
+- `NanoStream.tsx`: stick and trigger listeners call `sendGamepadState` directly.
+- `settingStore.ts`: default `polling_rate` 125 Hz (was 62.5), schema 4 migration also
+  enables `native_low_latency_decoder`.
+- `App.tsx`: apply the stereo and low-latency decoder native flags at startup and when
+  they change. Previously they were only pushed inside `saveSettings`.
+- `android/app/build.gradle`: restore `ndkVersion`. Without it AGP skipped stripping the
+  prebuilt `.so` files and the APK carried ~10 MB of debug symbols.
