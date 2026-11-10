@@ -75,6 +75,7 @@ def xstreamingTargetAbis = (project.findProperty("reactNativeArchitectures") ?: 
 
 android {
     compileSdkVersion rootProject.ext.compileSdkVersion
+    ndkVersion rootProject.ext.ndkVersion
 
     namespace "com.xstreaming"
     defaultConfig {
