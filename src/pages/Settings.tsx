@@ -194,18 +194,27 @@ function SettingsScreen({navigation}) {
     },
   });
 
-  const itemLayouts = React.useRef<
-    Record<number, {y: number; height: number}>
-  >({});
+  const itemRefs = React.useRef<Record<number, any>>({});
   const scrollViewHeight = React.useRef<number>(0);
 
   const scrollToFocused = React.useCallback((index: number) => {
-    const layout = itemLayouts.current[index];
-    if (layout && scrollViewRef.current) {
-      const viewH = scrollViewHeight.current || 600;
-      const targetY = Math.max(0, layout.y - (viewH - layout.height) / 2);
-      scrollViewRef.current.scrollTo({y: targetY, animated: true});
+    const node = itemRefs.current[index];
+    const scroll = scrollViewRef.current as any;
+    const inner = scroll?.getInnerViewNode?.();
+    if (!node || !inner || typeof node.measureLayout !== 'function') {
+      return;
     }
+    node.measureLayout(
+      inner,
+      (_x: number, y: number, _w: number, h: number) => {
+        const viewH = scrollViewHeight.current || 600;
+        scroll.scrollTo({
+          y: Math.max(0, y - viewH / 2 + h / 2),
+          animated: true,
+        });
+      },
+      () => {},
+    );
   }, []);
 
   React.useEffect(() => {
@@ -232,12 +241,8 @@ function SettingsScreen({navigation}) {
     return (
       <View
         key={key ?? index}
-        onLayout={e => {
-          const l = e.nativeEvent.layout;
-          itemLayouts.current[index] = {y: l.y, height: l.height};
-          if (focusedIndex === index && (isGamepadActive || Platform.isTV)) {
-            scrollToFocused(index);
-          }
+        ref={r => {
+          itemRefs.current[index] = r;
         }}>
         <SettingRow
           title={title}
