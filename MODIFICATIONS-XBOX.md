@@ -161,3 +161,15 @@ this project is for: picking an Xbox and starting remote play.
   they change. Previously they were only pushed inside `saveSettings`.
 - `android/app/build.gradle`: restore `ndkVersion`. Without it AGP skipped stripping the
   prebuilt `.so` files and the APK carried ~10 MB of debug symbols.
+
+## v3.2.0 — input correctness and idle allocations
+
+- `Input.start()`: reset the change signature and queue the current controller state when
+  the channel opens. Frames queued before the data channel is ready are dropped by
+  `send()`, and the signature previously suppressed the first packet, so a held button or
+  stick could be ignored until it changed.
+- `Input.queueGamepadStates()`: compute the change signature from the caller's objects and
+  clone a frame only when it is actually queued. Previously every poll tick cloned the
+  state before discovering it was unchanged.
+- `webrtc/index.ts`: stop cloning in `setGamepadState`; the input channel now owns the
+  snapshot.
