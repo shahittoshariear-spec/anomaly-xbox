@@ -1093,7 +1093,9 @@ function NanoStreamScreen({navigation, route}: any) {
       return () => {};
     }
 
-    Orientation.lockToLandscape();
+    if (getSettings().auto_landscape !== false) {
+      Orientation.lockToLandscape();
+    }
     FullScreenManager?.immersiveModeOn?.();
     GamepadManager?.setCurrentScreen?.('stream');
     suspendGamepadNavigation();

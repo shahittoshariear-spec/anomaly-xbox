@@ -338,7 +338,9 @@ function StreamScreen({navigation, route}: any) {
   React.useEffect(() => {
     let layoutTimer: any = null;
     const lockTimer = setTimeout(() => {
-      Orientation.lockToLandscape();
+      if (getSettings().auto_landscape !== false) {
+        Orientation.lockToLandscape();
+      }
 
       layoutTimer = setTimeout(() => {
         const {height: dHeight} = Dimensions.get('window');
@@ -533,7 +535,9 @@ function StreamScreen({navigation, route}: any) {
           );
           macroSequenceTimersRef.current = [];
         } else {
-          Orientation.lockToLandscape();
+          if (getSettings().auto_landscape !== false) {
+            Orientation.lockToLandscape();
+          }
           if (
             _settings.show_performance &&
             _settings.gamepad_kernal === 'Web'

@@ -460,6 +460,7 @@ export function NativeStreamScreenBase({
     let isActive = true;
     shouldRestoreOrientationRef.current = false;
     returnOrientationRef.current = null;
+    const autoLandscape = getSettings().auto_landscape !== false;
 
     getCurrentScreenOrientation().then(orientation => {
       if (isActive) {
@@ -468,7 +469,7 @@ export function NativeStreamScreenBase({
     });
 
     const handleDeviceOrientationChange = (orientation: string) => {
-      if (portraitMode) {
+      if (portraitMode || !autoLandscape) {
         return;
       }
 
@@ -479,14 +480,14 @@ export function NativeStreamScreenBase({
       }
     };
 
-    if (!portraitMode) {
+    if (!portraitMode && autoLandscape) {
       Orientation.addDeviceOrientationListener(handleDeviceOrientationChange);
     }
 
     orientationLockTimer.current = setTimeout(() => {
       if (portraitMode) {
         Orientation.lockToPortrait();
-      } else {
+      } else if (autoLandscape) {
         Orientation.lockToLandscape();
       }
 
@@ -1062,7 +1063,9 @@ export function NativeStreamScreenBase({
           macroSequenceTimersRef.current = [];
           closeSystemKeyboardModal();
         } else if (!portraitMode) {
-          Orientation.lockToLandscape();
+          if (getSettings().auto_landscape !== false) {
+            Orientation.lockToLandscape();
+          }
         }
       },
     );

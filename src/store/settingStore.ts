@@ -60,6 +60,7 @@ export type Settings = {
   short_trigger: boolean;
   auto_sprint: boolean;
   video_format: string;
+  auto_landscape: boolean;
   picture_in_picture: boolean;
   native_portrait_mode: boolean;
   native_portrait_gamepad_layout: any[];
@@ -146,6 +147,7 @@ const defaultSettings: Settings = {
   short_trigger: false,
   auto_sprint: false,
   video_format: 'Zoom',
+  auto_landscape: true,
   picture_in_picture: defaultPictureInPicture,
   native_portrait_mode: false,
   native_portrait_gamepad_layout: [],

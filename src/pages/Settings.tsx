@@ -51,6 +51,7 @@ const pick = (group: any[], names: string[]) =>
 const STREAMING_NAMES = [
   'resolution',
   'video_format',
+  'auto_landscape',
   'codec',
   'native_low_latency_decoder',
   'fsr',

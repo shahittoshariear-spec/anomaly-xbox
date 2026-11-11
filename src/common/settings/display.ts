@@ -16,6 +16,18 @@ const display = [
     ],
   },
   {
+    name: 'auto_landscape',
+    type: 'radio',
+    title: t('Landscape on stream start'),
+    description: t(
+      'Rotate the phone to landscape automatically when remote play starts',
+    ),
+    data: [
+      {value: true, text: t('Enable')},
+      {value: false, text: t('Disable')},
+    ],
+  },
+  {
     name: 'fsr',
     type: 'radio',
     title: t('FSR'),
