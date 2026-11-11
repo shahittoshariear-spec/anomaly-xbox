@@ -115,6 +115,22 @@ export default class InputChannel extends BaseChannel {
 
     this.send(Packet.toBuffer());
 
+    // Send the current controller state once the channel is open. Frames queued
+    // before the channel opened are dropped by send(), and the change detector
+    // would otherwise suppress the first packet until the user moves something.
+    this._lastGamepadSignature = '';
+    const currentState = this.getClient()._gpState;
+    if (currentState) {
+      const states = Array.isArray(currentState)
+        ? currentState.filter(
+            (state: any) => state !== null && state !== undefined,
+          )
+        : [currentState];
+      if (states.length > 0) {
+        this.queueGamepadStates(states);
+      }
+    }
+
     this.getClient()._inputDriver.run();
 
     const pollRate = this.getClient()._polling_rate || 62.5;
@@ -302,14 +318,15 @@ export default class InputChannel extends BaseChannel {
     }
     // Skip frames that repeat the previous state. The older code re-sent the
     // whole state on every poll tick, which put up to three 16 ms queues between
-    // the controller and the console for no benefit.
+    // the controller and the console for no benefit. Signature first, clone only
+    // when a frame is actually going to be sent.
     const signature = inputs.map(input => this._gamepadSignature(input)).join('|');
     if (signature === this._lastGamepadSignature) {
       return;
     }
     this._lastGamepadSignature = signature;
     for (let i = 0; i < inputs.length; i++) {
-      this.queueGamepadState(inputs[i]);
+      this.queueGamepadState({...inputs[i]});
     }
   }
 

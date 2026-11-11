@@ -547,7 +547,7 @@ class webRTCClient {
       return;
     }
 
-    processor.queueGamepadStates(states.map((state: any) => ({...state})));
+    processor.queueGamepadStates(states);
   }
 
   getAudioVolume() {
