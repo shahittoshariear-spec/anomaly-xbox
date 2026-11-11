@@ -173,3 +173,11 @@ this project is for: picking an Xbox and starting remote play.
   state before discovering it was unchanged.
 - `webrtc/index.ts`: stop cloning in `setGamepadState`; the input channel now owns the
   snapshot.
+
+## v3.3.0 — landscape option
+
+- `settingStore.ts`: new `auto_landscape` setting, default true.
+- `common/settings/display.ts`: radio row in the Streaming section.
+- `NativeStream.tsx` / `Stream.tsx` / `NanoStream.tsx`: the automatic landscape lock (and
+  the picture-in-picture exit lock) only runs when `auto_landscape` is enabled. Orientation
+  restore on exit is unchanged.
