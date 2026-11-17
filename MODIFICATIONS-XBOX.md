@@ -181,3 +181,12 @@ this project is for: picking an Xbox and starting remote play.
 - `NativeStream.tsx` / `Stream.tsx` / `NanoStream.tsx`: the automatic landscape lock (and
   the picture-in-picture exit lock) only runs when `auto_landscape` is enabled. Orientation
   restore on exit is unchanged.
+
+## v3.4.0 — animation and flush polish
+
+- `ConsoleCard`: staggered fade/slide entry using the native driver (`index` prop passed
+  from Home). Entry runs once per mount so refreshing the list does not replay it.
+- `LaunchAnimation`: 1300 ms (was 1500), `Easing.out(Easing.cubic)`, and a short white
+  flash at the logo reveal.
+- `Input.scheduleFlush`: `setImmediate` / `clearImmediate` instead of
+  `setTimeout(0)` `clearTimeout`, so the flush runs on the current timer turn.
