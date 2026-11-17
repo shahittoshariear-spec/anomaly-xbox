@@ -175,10 +175,12 @@ export default class InputChannel extends BaseChannel {
     if (this._flushTimer) {
       return;
     }
-    this._flushTimer = setTimeout(() => {
+    // setImmediate runs before the next frame's timers, so the packet leaves
+    // without waiting for a full setTimeout turn.
+    this._flushTimer = setImmediate(() => {
       this._flushTimer = null;
       this.flushInput();
-    }, 0);
+    });
   }
 
   onMessage(event: any) {
@@ -233,7 +235,7 @@ export default class InputChannel extends BaseChannel {
   onClose(event: any) {
     clearInterval(this._inputInterval);
     if (this._flushTimer) {
-      clearTimeout(this._flushTimer);
+      clearImmediate(this._flushTimer);
       this._flushTimer = null;
     }
     this._lastGamepadSignature = '';

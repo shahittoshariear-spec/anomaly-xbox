@@ -54,8 +54,8 @@ const LaunchAnimation: React.FC<Props> = ({visible, label, onFinished}) => {
     }
     const animation = Animated.timing(progress, {
       toValue: 1,
-      duration: 1500,
-      easing: Easing.bezier(0.22, 0.61, 0.36, 1),
+      duration: 1300,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     });
     animation.start(({finished}) => {
@@ -98,6 +98,10 @@ const LaunchAnimation: React.FC<Props> = ({visible, label, onFinished}) => {
     inputRange: [0, 0.25, 0.75, 1],
     outputRange: [0, 1, 1, 0],
   });
+  const flashOpacity = progress.interpolate({
+    inputRange: [0, 0.3, 0.42, 0.62],
+    outputRange: [0, 0, 0.22, 0],
+  });
 
   return (
     <Pressable
@@ -114,6 +118,11 @@ const LaunchAnimation: React.FC<Props> = ({visible, label, onFinished}) => {
             transform: [{scale}],
           },
         ]}>
+        <Animated.View
+          pointerEvents="none"
+          style={[StyleSheet.absoluteFill, {backgroundColor: '#FFFFFF', opacity: flashOpacity}]}
+        />
+
         {STREAKS.map(index => {
           const direction = index % 2 === 0 ? 1 : -1;
           const distance = width * (0.55 + Math.abs(index) * 0.08);

@@ -1,5 +1,5 @@
 import React from 'react';
-import {Image, Pressable, StyleSheet, Text, View} from 'react-native';
+import {Animated, Easing, Image, Pressable, StyleSheet, Text, View} from 'react-native';
 import {Menu} from 'react-native-paper';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import {useAnomalyTheme} from './theme';
@@ -12,6 +12,7 @@ type ConsoleItemProps = {
     consoleType?: string;
     powerState?: string;
   };
+  index?: number;
   isFocused?: boolean;
   onStream: () => void;
   onPowerOn: () => void;
@@ -77,6 +78,7 @@ const ConsoleArt: React.FC<{type?: string; size?: number}> = ({
 
 const ConsoleCard: React.FC<ConsoleItemProps> = ({
   consoleItem,
+  index = 0,
   isFocused,
   onStream,
   onPowerOn,
@@ -86,7 +88,34 @@ const ConsoleCard: React.FC<ConsoleItemProps> = ({
   const [menuVisible, setMenuVisible] = React.useState(false);
   const state = stateTone(consoleItem.powerState);
 
+  // Cards settle in with a short stagger. Re-renders keep the final value, so a
+  // refresh does not replay the animation for cards that are still on screen.
+  const appear = React.useRef(new Animated.Value(0)).current;
+  React.useEffect(() => {
+    const animation = Animated.timing(appear, {
+      toValue: 1,
+      duration: 320,
+      delay: Math.min(index, 6) * 45,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [appear, index]);
+
   return (
+    <Animated.View
+      style={{
+        opacity: appear,
+        transform: [
+          {
+            translateY: appear.interpolate({
+              inputRange: [0, 1],
+              outputRange: [12, 0],
+            }),
+          },
+        ],
+      }}>
     <SurfaceCard
       accentBorder={isFocused}
       style={[styles.card, isFocused && styles.cardFocused]}>
@@ -170,6 +199,7 @@ const ConsoleCard: React.FC<ConsoleItemProps> = ({
         />
       </Pressable>
     </SurfaceCard>
+    </Animated.View>
   );
 };
 

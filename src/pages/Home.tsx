@@ -916,6 +916,7 @@ function HomeScreen({navigation, route}) {
                   <ConsoleCard
                     key={item.serverId || index}
                     consoleItem={item}
+                    index={index}
                     isFocused={
                       (isGamepadActive || Platform.isTV) &&
                       focusedIndex === index
