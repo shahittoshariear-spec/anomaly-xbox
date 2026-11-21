@@ -59,6 +59,7 @@ import VirtualGamepadSettingsScreen from './pages/VirtualGamepadSettings';
 import CustomGamepadScreen from './pages/CustomGamepad';
 import GamepadTestScreen from './pages/GamepadTest';
 import updater from './utils/updater';
+import {SHOW_UPDATE_PROGRESS_EVENT} from './utils/updatePrompt';
 import getServer from './utils/get-server';
 import {
   applyPrimaryColorToPaperTheme,
@@ -224,6 +225,24 @@ function App() {
       },
     );
 
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      SHOW_UPDATE_PROGRESS_EVENT,
+      () => {
+        setUpdateProgress({
+          downloadedBytes: 0,
+          progress: 0,
+          status: 'downloading',
+          totalBytes: 0,
+        });
+        setUpdateProgressVisible(true);
+      },
+    );
     return () => {
       subscription.remove();
     };

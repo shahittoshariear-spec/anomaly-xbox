@@ -1,13 +1,7 @@
 import React from 'react';
-import {
-  Animated,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import {PALETTES, accentAlpha} from './palette';
+import {Animated, Pressable, StyleSheet, Text, View} from 'react-native';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
+import {PALETTES, accentAlpha, readableOn} from './palette';
 import {useAnomalyTheme} from './theme';
 
 type Props = {
@@ -16,9 +10,9 @@ type Props = {
 };
 
 /**
- * Horizontal palette picker. Tapping a swatch applies the palette immediately;
- * the short accent wash gives the change a visible transition rather than an
- * abrupt swap.
+ * Palette picker in the style of an iOS colour list: a grid of round swatches
+ * with a ring and check mark on the current choice. Tapping applies the palette
+ * immediately, with a short accent wash as the transition.
  */
 const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
   const palette = useAnomalyTheme();
@@ -32,7 +26,7 @@ const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
     wash.setValue(1);
     Animated.timing(wash, {
       toValue: 0,
-      duration: 320,
+      duration: 340,
       useNativeDriver: false,
     }).start();
   };
@@ -47,17 +41,17 @@ const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
         pointerEvents="none"
         style={[
           StyleSheet.absoluteFill,
-          {backgroundColor: palette.primary, opacity: wash.interpolate({
-            inputRange: [0, 1],
-            outputRange: [0, 0.16],
-          })},
+          {
+            backgroundColor: palette.primary,
+            opacity: wash.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, 0.14],
+            }),
+          },
         ]}
       />
 
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.chips}>
+      <View style={styles.grid}>
         {PALETTES.map(item => {
           const selected = item.id === selectedId;
           return (
@@ -65,35 +59,46 @@ const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
               key={item.id}
               onPress={() => choose(item.id)}
               style={({pressed}) => [
-                styles.chip,
-                {
-                  borderColor: selected ? item.primary : palette.border,
-                  backgroundColor: selected
-                    ? accentAlpha(item, 0.14)
-                    : palette.surfaceRaised,
-                },
-                pressed && {opacity: 0.8},
+                styles.item,
+                pressed && {opacity: 0.7},
               ]}>
               <View
                 style={[
-                  styles.swatch,
-                  {
-                    backgroundColor: item.primary,
-                    shadowColor: item.primary,
-                  },
-                ]}
-              />
+                  styles.ring,
+                  {borderColor: selected ? item.primary : 'transparent'},
+                ]}>
+                <View
+                  style={[
+                    styles.swatch,
+                    {
+                      backgroundColor: item.primary,
+                      shadowColor: item.primary,
+                    },
+                  ]}>
+                  {selected && (
+                    <MaterialCommunityIcons
+                      name="check"
+                      size={18}
+                      color={readableOn(item.primary)}
+                    />
+                  )}
+                </View>
+              </View>
               <Text
                 style={[
-                  styles.chipLabel,
-                  {color: selected ? item.primary : palette.textMuted},
-                ]}>
+                  styles.label,
+                  {
+                    color: selected ? palette.text : palette.textMuted,
+                    fontWeight: selected ? '600' : '400',
+                  },
+                ]}
+                numberOfLines={1}>
                 {item.name}
               </Text>
             </Pressable>
           );
         })}
-      </ScrollView>
+      </View>
 
       <View style={[styles.preview, {borderColor: palette.border}]}>
         <View style={styles.previewHeader}>
@@ -106,10 +111,7 @@ const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
           <View
             style={[
               styles.previewPill,
-              {
-                borderColor: palette.primary,
-                backgroundColor: accentAlpha(palette, 0.16),
-              },
+              {backgroundColor: accentAlpha(palette, 0.14)},
             ]}>
             <Text style={[styles.previewPillText, {color: palette.primary}]}>
               Standby
@@ -126,79 +128,87 @@ const ThemePicker: React.FC<Props> = ({selectedId, onSelect}) => {
 
 const styles = StyleSheet.create({
   card: {
-    marginHorizontal: 16,
-    borderRadius: 18,
-    borderWidth: 1,
-    paddingVertical: 14,
+    marginHorizontal: 20,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 10,
     overflow: 'hidden',
   },
-  chips: {
-    paddingHorizontal: 14,
-  },
-  chip: {
+  grid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    paddingHorizontal: 6,
+  },
+  item: {
+    width: '33.33%',
     alignItems: 'center',
-    borderWidth: 1.5,
-    borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginRight: 8,
+    paddingVertical: 10,
+  },
+  ring: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   swatch: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    marginRight: 8,
-    shadowOpacity: 0.7,
-    shadowRadius: 6,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  chipLabel: {
-    fontSize: 12,
-    fontWeight: '700',
+  label: {
+    marginTop: 7,
+    fontSize: 11.5,
+    letterSpacing: 0.1,
   },
   preview: {
-    marginTop: 14,
-    marginHorizontal: 14,
+    marginTop: 8,
+    marginHorizontal: 12,
     padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   previewHeader: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   previewDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
     marginRight: 8,
   },
   previewTitle: {
     flex: 1,
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   previewPill: {
-    borderWidth: 1,
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 2,
   },
   previewPillText: {
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 10.5,
+    fontWeight: '600',
   },
   previewButton: {
     marginTop: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 9,
     alignItems: 'center',
   },
   previewButtonText: {
     color: '#0A0A0F',
     fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
 });
 

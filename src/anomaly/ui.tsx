@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Animated,
   Pressable,
   StyleSheet,
   Text,
@@ -33,14 +34,9 @@ export const SectionHeader: React.FC<{
   const palette = useAnomalyTheme();
   return (
     <View style={[styles.sectionHeader, style]}>
-      <View style={styles.sectionTitleRow}>
-        <View
-          style={[styles.sectionBar, {backgroundColor: palette.primary}]}
-        />
-        <Text style={[styles.sectionTitle, {color: palette.text}]}>
-          {title}
-        </Text>
-      </View>
+      <Text style={[styles.sectionTitle, {color: palette.textMuted}]}>
+        {title.toUpperCase()}
+      </Text>
       {!!hint && (
         <Text style={[styles.sectionHint, {color: palette.textMuted}]}>
           {hint}
@@ -57,25 +53,40 @@ export const SurfaceCard: React.FC<{
   accentBorder?: boolean;
 }> = ({style, children, onPress, accentBorder}) => {
   const palette = useAnomalyTheme();
+  const scale = React.useRef(new Animated.Value(1)).current;
+
+  const springTo = (value: number) => {
+    Animated.spring(scale, {
+      toValue: value,
+      useNativeDriver: true,
+      damping: 20,
+      stiffness: 300,
+      mass: 0.6,
+    }).start();
+  };
+
   const cardStyle: ViewStyle = {
     backgroundColor: palette.surface,
     borderColor: accentBorder ? palette.primary : palette.border,
   };
+
   if (!onPress) {
-    return <View style={[styles.card, cardStyle, style]}>{children}</View>;
+    return (
+      <View style={[styles.card, cardStyle, style]}>{children}</View>
+    );
   }
+
   return (
-    <Pressable
-      accessibilityRole="button"
-      onPress={onPress}
-      style={({pressed}) => [
-        styles.card,
-        cardStyle,
-        pressed && {opacity: 0.82, transform: [{scale: 0.995}]},
-        style,
-      ]}>
-      {children}
-    </Pressable>
+    <Animated.View style={[{transform: [{scale}]}, style]}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onPress}
+        onPressIn={() => springTo(0.975)}
+        onPressOut={() => springTo(1)}
+        style={[styles.card, cardStyle]}>
+        {children}
+      </Pressable>
+    </Animated.View>
   );
 };
 
@@ -142,55 +153,46 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
   sectionHeader: {
-    paddingHorizontal: 20,
-    paddingTop: 24,
-    paddingBottom: 10,
-  },
-  sectionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  sectionBar: {
-    width: 3,
-    height: 16,
-    borderRadius: 2,
-    marginRight: 10,
+    paddingHorizontal: 24,
+    paddingTop: 26,
+    paddingBottom: 8,
   },
   sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    letterSpacing: 0.4,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 1.3,
+    opacity: 0.85,
   },
   sectionHint: {
-    marginTop: 6,
-    marginLeft: 13,
+    marginTop: 5,
     fontSize: 12,
     lineHeight: 17,
+    opacity: 0.8,
   },
   card: {
-    borderRadius: 18,
-    borderWidth: 1,
+    borderRadius: 22,
+    borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',
   },
   pill: {
-    borderWidth: 1,
     borderRadius: 999,
-    paddingHorizontal: 9,
-    paddingVertical: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     alignSelf: 'flex-start',
   },
   pillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.4,
+    fontSize: 10.5,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   iconBadge: {
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    marginLeft: 16,
+    marginLeft: 20,
+    opacity: 0.7,
   },
 });

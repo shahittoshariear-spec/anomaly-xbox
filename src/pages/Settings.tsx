@@ -30,6 +30,7 @@ import {clearXcloudData} from '../store/xcloudStore';
 import {clearConsolesData} from '../store/consolesStore';
 import {clearServerData} from '../store/serverStore';
 import {storage} from '../store/mmkv';
+import {checkForUpdates} from '../utils/updatePrompt';
 
 import bases from '../common/settings/bases';
 import display from '../common/settings/display';
@@ -172,6 +173,7 @@ function SettingsScreen({navigation}) {
       list.push(() => handleItemPress(meta.name)),
     );
     [...appSettings].forEach(meta => list.push(() => handleItemPress(meta.name)));
+    list.push(() => checkForUpdates(t as any));
     list.push(() => navigation.navigate('About'));
     list.push(() => handleClearCache());
     if (isAuthed) {
@@ -327,6 +329,13 @@ function SettingsScreen({navigation}) {
           <>
             {renderGroup(appSettings, false)}
             {renderItem(
+              t('Check for updates'),
+              t('Download the latest Anomaly Xbox build'),
+              () => checkForUpdates(t as any),
+              'check_updates',
+              false,
+            )}
+            {renderItem(
               t('About'),
               'Version, credits and licenses',
               () => navigation.navigate('About'),
@@ -380,7 +389,7 @@ function SettingsScreen({navigation}) {
 
 const styles = StyleSheet.create({
   group: {
-    marginHorizontal: 16,
+    marginHorizontal: 20,
     paddingVertical: 4,
   },
   version: {

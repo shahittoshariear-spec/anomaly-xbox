@@ -88,20 +88,35 @@ const ConsoleCard: React.FC<ConsoleItemProps> = ({
   const [menuVisible, setMenuVisible] = React.useState(false);
   const state = stateTone(consoleItem.powerState);
 
-  // Cards settle in with a short stagger. Re-renders keep the final value, so a
-  // refresh does not replay the animation for cards that are still on screen.
+  // Cards settle in with a short spring. The effect runs once per mount, so a
+  // refresh does not replay the animation for cards that stay on screen.
   const appear = React.useRef(new Animated.Value(0)).current;
+  const scale = React.useRef(new Animated.Value(1)).current;
+
   React.useEffect(() => {
-    const animation = Animated.timing(appear, {
-      toValue: 1,
-      duration: 320,
-      delay: Math.min(index, 6) * 45,
-      easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
-    });
+    const animation = Animated.sequence([
+      Animated.delay(Math.min(index, 6) * 45),
+      Animated.spring(appear, {
+        toValue: 1,
+        damping: 18,
+        stiffness: 220,
+        mass: 0.8,
+        useNativeDriver: true,
+      }),
+    ]);
     animation.start();
     return () => animation.stop();
   }, [appear, index]);
+
+  const springTo = (value: number) => {
+    Animated.spring(scale, {
+      toValue: value,
+      useNativeDriver: true,
+      damping: 20,
+      stiffness: 320,
+      mass: 0.5,
+    }).start();
+  };
 
   return (
     <Animated.View
@@ -111,114 +126,106 @@ const ConsoleCard: React.FC<ConsoleItemProps> = ({
           {
             translateY: appear.interpolate({
               inputRange: [0, 1],
-              outputRange: [12, 0],
+              outputRange: [14, 0],
             }),
           },
+          {scale},
         ],
       }}>
-    <SurfaceCard
-      accentBorder={isFocused}
-      style={[styles.card, isFocused && styles.cardFocused]}>
-      <View style={styles.row}>
-        <Pressable
-          onPress={onStream}
-          style={({pressed}) => [styles.infoPress, pressed && {opacity: 0.75}]}>
-          <IconBadge size={48}>
-            <ConsoleArt type={consoleItem.consoleType} />
-          </IconBadge>
+      <SurfaceCard
+        accentBorder={isFocused}
+        style={[styles.card, isFocused && styles.cardFocused]}>
+        <View style={styles.row}>
+          <Pressable
+            onPress={onStream}
+            onPressIn={() => springTo(0.985)}
+            onPressOut={() => springTo(1)}
+            style={styles.infoPress}>
+            <IconBadge size={50}>
+              <ConsoleArt type={consoleItem.consoleType} />
+            </IconBadge>
 
-          <View style={styles.info}>
-            <Text
-              style={[styles.name, {color: palette.text}]}
-              numberOfLines={1}>
-              {consoleItem.deviceName || consoleLabel(consoleItem.consoleType)}
-            </Text>
-            <Text style={[styles.meta, {color: palette.textMuted}]}>
-              {consoleLabel(consoleItem.consoleType)}
-            </Text>
-            <View style={styles.pillRow}>
-              <Pill label={state.label} tone={state.tone} />
+            <View style={styles.info}>
+              <Text
+                style={[styles.name, {color: palette.text}]}
+                numberOfLines={1}>
+                {consoleItem.deviceName ||
+                  consoleLabel(consoleItem.consoleType)}
+              </Text>
+              <Text style={[styles.meta, {color: palette.textMuted}]}>
+                {consoleLabel(consoleItem.consoleType)}
+              </Text>
+              <View style={styles.pillRow}>
+                <Pill label={state.label} tone={state.tone} />
+              </View>
             </View>
-          </View>
-        </Pressable>
+          </Pressable>
 
-        <Menu
-          visible={menuVisible}
-          onDismiss={() => setMenuVisible(false)}
-          anchor={
-            <Pressable
-              hitSlop={10}
-              onPress={() => setMenuVisible(true)}
-              style={styles.powerButton}>
-              <MaterialCommunityIcons
-                name="power"
-                size={22}
-                color={palette.textMuted}
-              />
-            </Pressable>
-          }>
-          <Menu.Item
-            onPress={() => {
-              setMenuVisible(false);
-              onPowerOn();
-            }}
-            title="Turn on"
-          />
-          <Menu.Item
-            onPress={() => {
-              setMenuVisible(false);
-              onPowerOff();
-            }}
-            title="Turn off"
-          />
-        </Menu>
-      </View>
+          <Menu
+            visible={menuVisible}
+            onDismiss={() => setMenuVisible(false)}
+            anchor={
+              <Pressable
+                hitSlop={10}
+                onPress={() => setMenuVisible(true)}
+                style={styles.iconButton}>
+                <MaterialCommunityIcons
+                  name="power"
+                  size={20}
+                  color={palette.textMuted}
+                />
+              </Pressable>
+            }>
+            <Menu.Item
+              onPress={() => {
+                setMenuVisible(false);
+                onPowerOn();
+              }}
+              title="Turn on"
+            />
+            <Menu.Item
+              onPress={() => {
+                setMenuVisible(false);
+                onPowerOff();
+              }}
+              title="Turn off"
+            />
+          </Menu>
 
-      <Pressable
-        onPress={onStream}
-        style={({pressed}) => [
-          styles.streamBar,
-          {
-            backgroundColor: `${palette.primary}14`,
-            borderColor: palette.border,
-          },
-          pressed && {opacity: 0.75},
-        ]}>
-        <MaterialCommunityIcons
-          name="play-circle-outline"
-          size={20}
-          color={palette.primary}
-        />
-        <Text style={[styles.streamText, {color: palette.primary}]}>
-          Remote play
-        </Text>
-        <MaterialCommunityIcons
-          name="chevron-right"
-          size={20}
-          color={palette.primary}
-        />
-      </Pressable>
-    </SurfaceCard>
+          <Pressable
+            hitSlop={8}
+            onPress={onStream}
+            onPressIn={() => springTo(0.985)}
+            onPressOut={() => springTo(1)}
+            style={styles.iconButton}>
+            <MaterialCommunityIcons
+              name="chevron-right"
+              size={24}
+              color={palette.textMuted}
+            />
+          </Pressable>
+        </View>
+      </SurfaceCard>
     </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   card: {
-    marginBottom: 12,
+    marginBottom: 10,
   },
   cardFocused: {
     shadowColor: '#FFFFFF',
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
+    elevation: 6,
   },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 16,
+    paddingVertical: 14,
     paddingLeft: 16,
-    paddingRight: 8,
+    paddingRight: 6,
   },
   infoPress: {
     flex: 1,
@@ -228,38 +235,25 @@ const styles = StyleSheet.create({
   info: {
     flex: 1,
     marginLeft: 14,
-    marginRight: 8,
+    marginRight: 6,
   },
   name: {
     fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.2,
+    fontWeight: '600',
+    letterSpacing: -0.1,
   },
   meta: {
-    marginTop: 3,
-    fontSize: 12,
-    fontWeight: '500',
+    marginTop: 2,
+    fontSize: 12.5,
+    fontWeight: '400',
+    letterSpacing: 0.1,
   },
   pillRow: {
-    marginTop: 8,
+    marginTop: 7,
     flexDirection: 'row',
   },
-  powerButton: {
-    padding: 10,
-  },
-  streamBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  streamText: {
-    flex: 1,
-    marginLeft: 8,
-    fontSize: 13,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+  iconButton: {
+    padding: 8,
   },
 });
 

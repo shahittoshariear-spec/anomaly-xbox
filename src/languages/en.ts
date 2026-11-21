@@ -339,6 +339,12 @@ export default {
       'XStreaming needs permission to install unknown apps. Grant it in system settings, then tap auto install again.',
     AutoInstallFailed:
       'Automatic download and installation failed. Try manual download.',
+    'Software update': 'Software update',
+    'Could not check for updates. Check your connection.':
+      'Could not check for updates. Check your connection.',
+    'Check for updates': 'Check for updates',
+    'Download the latest Anomaly Xbox build':
+      'Download and install the latest release without leaving the app',
     gyroTitle: 'Enable gyroscope',
     gyroDesc:
       'Force using the device/controller gyroscope to simulate the right stick.',

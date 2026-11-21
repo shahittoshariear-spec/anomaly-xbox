@@ -18,7 +18,7 @@ import {useIsFocused} from '@react-navigation/native';
 import RNRestart from 'react-native-restart';
 import ConsoleCard from '../anomaly/ConsoleCard';
 import LaunchAnimation from '../anomaly/LaunchAnimation';
-import {AnomalyScreen, SectionHeader, SurfaceCard} from '../anomaly/ui';
+import {AnomalyScreen, SurfaceCard} from '../anomaly/ui';
 import {useAnomalyTheme} from '../anomaly/theme';
 import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 import GamepadFooterHints, {
@@ -852,40 +852,40 @@ function HomeScreen({navigation, route}) {
             onTouchStart={() => {
               if (!Platform.isTV) setIsGamepadActive(false);
             }}>
-            <View style={styles.hero}>
+            <View style={styles.topBar}>
               <Image
                 source={require('../assets/anomaly-logo.png')}
-                style={styles.heroLogo}
+                style={styles.topLogo}
                 resizeMode="contain"
               />
-              <View style={styles.heroText}>
-                <Text style={[styles.heroTitle, {color: palette.text}]}>
-                  Anomaly
-                </Text>
-                <Text style={[styles.heroSubtitle, {color: palette.textMuted}]}>
-                  Xbox remote play
-                </Text>
-              </View>
+              <Text style={[styles.appName, {color: palette.textMuted}]}>
+                ANOMALY
+              </Text>
+              <View style={styles.topSpacer} />
               <Pressable
-                hitSlop={12}
+                hitSlop={10}
                 onPress={() => navigation.navigate('Settings')}
-                style={styles.settingsButton}>
+                style={({pressed}) => [
+                  styles.settingsButton,
+                  {backgroundColor: `${palette.text}12`},
+                  pressed && {opacity: 0.6},
+                ]}>
                 <MaterialCommunityIcons
                   name="cog-outline"
-                  size={24}
+                  size={20}
                   color={palette.text}
                 />
               </Pressable>
             </View>
 
-            <SectionHeader
-              title={t('Consoles')}
-              hint={
-                consoles.length > 0
-                  ? 'Tap a console to start remote play.'
-                  : undefined
-              }
-            />
+            <View style={styles.titleBlock}>
+              <Text style={[styles.largeTitle, {color: palette.text}]}>
+                {t('Consoles')}
+              </Text>
+              <Text style={[styles.subtitle, {color: palette.textMuted}]}>
+                Xbox remote play
+              </Text>
+            </View>
 
             {!!refreshError && (
               <Pressable
@@ -1101,37 +1101,51 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  hero: {
+  topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 6,
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    paddingBottom: 4,
   },
-  heroLogo: {
-    width: 42,
-    height: 42,
+  topLogo: {
+    width: 24,
+    height: 24,
   },
-  heroText: {
+  appName: {
+    marginLeft: 8,
+    fontSize: 11.5,
+    fontWeight: '700',
+    letterSpacing: 2.2,
+  },
+  topSpacer: {
     flex: 1,
-    marginLeft: 12,
-  },
-  heroTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  heroSubtitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 1,
   },
   settingsButton: {
-    padding: 8,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  titleBlock: {
+    paddingHorizontal: 22,
+    paddingTop: 18,
+    paddingBottom: 10,
+  },
+  largeTitle: {
+    fontSize: 34,
+    fontWeight: '700',
+    letterSpacing: -0.6,
+  },
+  subtitle: {
+    marginTop: 2,
+    fontSize: 13,
+    fontWeight: '400',
+    letterSpacing: 0.1,
   },
   consoleList: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
   },
   refreshRow: {
     flexDirection: 'row',
@@ -1145,9 +1159,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   emptyCard: {
-    marginHorizontal: 16,
+    marginHorizontal: 20,
     alignItems: 'center',
-    padding: 24,
+    padding: 26,
   },
   emptyIcon: {
     width: 58,
@@ -1177,7 +1191,7 @@ const styles = StyleSheet.create({
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 16,
+    marginHorizontal: 20,
     marginBottom: 12,
     paddingVertical: 12,
     paddingHorizontal: 14,
