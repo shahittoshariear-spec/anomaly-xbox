@@ -190,3 +190,18 @@ this project is for: picking an Xbox and starting remote play.
   flash at the logo reveal.
 - `Input.scheduleFlush`: `setImmediate` / `clearImmediate` instead of
   `setTimeout(0)` `clearTimeout`, so the flush runs on the current timer turn.
+
+## v3.5.0 — update entry and Apple-style refresh
+
+- `utils/updatePrompt.ts`: shared check/alert/install flow. Settings can now start the
+  same download-and-install path as the startup check; `SHOW_UPDATE_PROGRESS` makes the
+  App-level progress dialog appear regardless of where the update was started.
+- `Settings`: "Check for updates" row in the App group.
+- `ui.tsx`: uppercase 11 pt section labels, 22 pt hairline-bordered cards, spring press
+  scale on tappable cards.
+- `Home`: 34 pt large title, quiet subtitle, small wordmark, circular settings button.
+- `ConsoleCard`: bottom action bar removed; compact row with a power menu and chevron,
+  spring entry with stagger, damped press scale.
+- `ThemePicker`: 3 × 2 swatch grid with selection ring and check mark (contrast-aware),
+  keeping the accent wash and preview.
+- `SettingRow`: taller rows, 16 pt titles, tighter description text.
